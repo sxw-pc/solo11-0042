@@ -1,0 +1,25 @@
+# Rules consumed only by the loopback verify stub.
+# Unknown fingerprints deliberately produce an "unknown" verdict.
+default_outcome: unknown
+default_delay_ms: 0
+rules:
+  - fingerprint: "sha256:c470aa9eba21386d08ba3609c35fa56ec04827040e5e46be65d90dc1c1d89564"
+    outcome: valid
+  - fingerprint: "sha256:5f2eca5e96860379cdb33e9d7bea68a7cf63332545544f734305f34381b681b4"
+    outcome: valid
+  - fingerprint: "sha256:8ee32b64a37719941b66442faf6d0484d96cfc2fbbd07e018b4fdc2ad4ed4815"
+    outcome: valid
+  - fingerprint: "sha256:c282d2e21bd7e5ed788ea58f11b2819da7c8941e833997349c2532b0b877f472"
+    outcome: valid
+  - fingerprint: "sha256:00aaa18ff0772196f1b7d54cc1d24448ab3ebcb6e3fd9949117c4d2f994460c0"
+    outcome: valid
+  - fingerprint: "sha256:a70e808f6638847a17765e034499fee63714ca0f8412dfb4412d13c7f205bed1"
+    outcome: valid
+  - fingerprint: "sha256:c2c5874d4b32cb2dee4d23ed01505b29be70b9ff75efb1dc5e4ebf3736a71b2f"
+    outcome: valid
+  - fingerprint: "sha256:1663787a072cb21004546d51e86d3f4bb7a108708fc0e48ffabdc35e4c5893aa"
+    outcome: valid
+  - fingerprint: "sha256:35af7f47a8c4005c7cb4a55bfcbbfce3e851445b6232278bc3f67dc8c9a3d228"
+    outcome: invalid
+  - fingerprint: "sha256:cda55ab41ec995b59a64983dc811cc8b37eee23c4de7a5223bfb0c1c4b339636"
+    outcome: unknown

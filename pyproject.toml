@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "credrot"
+version = "0.1.0"
+description = "Offline credential-lifecycle manager for local collection tasks"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "credrot contributors"}]
+dependencies = [
+  "Flask>=3.0,<4",
+  "PyYAML>=6.0,<7",
+  "requests>=2.31,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0,<9"]
+
+[project.scripts]
+credrot = "credrot.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["credrot*"]
+
+[tool.setuptools.package-data]
+"credrot.web" = ["templates/*.html", "static/*.css"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

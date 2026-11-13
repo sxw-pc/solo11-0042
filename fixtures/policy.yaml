@@ -1,0 +1,20 @@
+# Deterministic local rotation policy. No external endpoint is configured.
+rotation:
+  horizon_days: 14
+  critical_horizon_days: 3
+  period_days: 90
+  max_items_per_plan: 20
+
+verification:
+  timeout_seconds: 1.0
+
+stub:
+  host: 127.0.0.1
+  port: 8777
+
+resolver:
+  max_verification_age_minutes: 1440
+  allow_unverified: false
+
+tasks:
+  default_backup_margin: 1

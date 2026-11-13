@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>credrot · local credential ledger</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">OFFLINE · METADATA ONLY</p>
+      <h1>credrot</h1>
+      <p class="subtitle">Credential lifecycle ledger for local collection tasks.</p>
+    </div>
+    <div class="stamp">
+      <span>generated</span>
+      <strong>{{ generated_at }}</strong>
+    </div>
+  </header>
+
+  <main>
+    <section class="notice">
+      <strong>Compliance boundary.</strong>
+      This surface manages synthetic credential metadata only. It stores no
+      secret material. Verification calls are restricted to the loopback stub
+      at <code>127.0.0.1</code>.
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Credentials</h2>
+        <span>{{ credentials|length }} registered</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th><th>Source</th><th>Role</th><th>Ver</th>
+              <th>State</th><th>Expires</th><th>Days</th><th>Last check</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for row in credentials %}
+            <tr>
+              <td class="mono">{{ row.id }}</td>
+              <td>{{ row.source }}</td>
+              <td>{{ row.role }}</td>
+              <td>{{ row.version }}</td>
+              <td><span class="badge state-{{ row.effective_state }}">{{ row.effective_state }}</span></td>
+              <td class="mono">{{ row.expires_at }}</td>
+              <td>{{ row.days_to_expiry }}</td>
+              <td>
+                {% if row.verification %}
+                  <span class="badge outcome-{{ row.verification.outcome }}">{{ row.verification.outcome }}</span>
+                {% else %}
+                  <span class="muted">unverified</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="8" class="muted">No credentials loaded. Run <code>python -m credrot init-demo</code>.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Recent batches</h2>
+        <span>local SQLite ledger</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Batch</th><th>Status</th><th>Generated</th><th>Executed</th><th>Items</th></tr>
+          </thead>
+          <tbody>
+          {% for batch in batches %}
+            <tr>
+              <td class="mono">{{ batch.batch_id }}</td>
+              <td><span class="badge batch-{{ batch.status }}">{{ batch.status }}</span></td>
+              <td class="mono">{{ batch.generated_at }}</td>
+              <td class="mono">{{ batch.executed_at or '-' }}</td>
+              <td>{{ batch.summary.get('total_items', batch.summary.get('execution', {}).get('total', 0)) }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5" class="muted">No batches yet. Generate one with <code>python -m credrot plan</code>.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="commands">
+      <h2>Local commands</h2>
+      <pre>python -m credrot init-demo
+python -m credrot plan --now 2025-01-01T00:00:00Z
+python -m credrot rotate --batch BATCH_ID
+python -m credrot verify-stub
+python -m credrot verify --batch BATCH_ID
+pytest -q</pre>
+      <p class="muted">Ledger: {{ db_path }}</p>
+    </section>
+  </main>
+
+  <footer>
+    <span>credrot 0.1.0</span>
+    <span>loopback only · no CDN · no secret values</span>
+  </footer>
+</body>
+</html>

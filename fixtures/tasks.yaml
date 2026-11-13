@@ -1,0 +1,51 @@
+# Synthetic local collection tasks. Bindings are ordered fallback preferences.
+tasks:
+  - id: TASK-ALPHA-DAILY
+    source: DS-ALPHA
+    priority: 1
+    required_roles: [reader]
+    min_active: 1
+    backup_margin: 1
+    bindings:
+      - CRED-ALPHA-READER-01
+      - CRED-ALPHA-READER-02
+
+  - id: TASK-ALPHA-EXPORT
+    source: DS-ALPHA
+    priority: 2
+    required_roles: [writer]
+    min_active: 1
+    backup_margin: 0
+    bindings:
+      - CRED-ALPHA-WRITER-01
+
+  - id: TASK-BETA-DAILY
+    source: DS-BETA
+    priority: 1
+    required_roles: [reader, writer]
+    min_active: 1
+    backup_margin: 1
+    bindings:
+      - CRED-BETA-READER-01
+      - CRED-BETA-READER-02
+      - CRED-BETA-WRITER-01
+      - CRED-BETA-WRITER-02
+
+  - id: TASK-GAMMA-SYNC
+    source: DS-GAMMA
+    priority: 3
+    required_roles: [reader]
+    min_active: 1
+    backup_margin: 0
+    bindings:
+      - CRED-GAMMA-READER-01
+      - CRED-GAMMA-OLD-01
+
+  - id: TASK-GAMMA-AUDIT
+    source: DS-GAMMA
+    priority: 4
+    required_roles: [admin]
+    min_active: 1
+    backup_margin: 0
+    bindings:
+      - CRED-GAMMA-SPARE-01

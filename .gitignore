@@ -13,3 +13,7 @@ reports/
 .coverage
 coverage.xml
 htmlcov/
+node_modules/
+*.pyc
+.env
+dist/

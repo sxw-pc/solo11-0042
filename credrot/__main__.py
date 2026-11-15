@@ -20,6 +20,7 @@ from .config import (
     load_policy,
 )
 from .db import Database
+from .gating import load_gates
 from .planner import build_plan
 from .plan_export import plan_to_markdown
 from .registry import load_demo_registry
@@ -156,7 +157,10 @@ def _plan(args: argparse.Namespace) -> int:
     tasks = load_tasks(db)
     if not credentials:
         raise ValueError("ledger is empty; run init-demo first")
-    plan = build_plan(credentials, tasks, policy, clock.now())
+    plan = build_plan(
+        credentials, tasks, policy, clock.now(),
+        gates=load_gates(db, credentials, clock.now()),
+    )
     save_plan(db, plan)
     if args.format == "markdown":
         print(plan_to_markdown(plan), end="")

@@ -18,7 +18,8 @@ and which verified credential a task should use right now. It never stores a sec
   verification observations, and audit events.
 - A five-state credential machine: `active`, `standby`, `rotating`, `expired`, `revoked`.
 - A deterministic planner driven by expiry horizons, task roles, minimum active coverage,
-  backup margins, and task priority.
+  backup margins, and task priority — plus a persisted post-rotation gate that withholds
+  further rotation until a completed rotation has a strictly later valid verification.
 - A transactional, idempotent rotation executor that records every transition.
 - A loopback verification stub plus a health-conclusion engine
   (`healthy / degraded / failing`).
@@ -136,9 +137,17 @@ the fixed timestamp and normalized plan content. Reports use fixed clock values,
 keys, and no process IDs or wall-clock random values, so two reports rendered from the same
 ledger state and fixed clock are byte-identical.
 
+Planning also reads persisted timing from the ledger: a completed rotation with no *strictly
+later* valid verification produces a `POST_ROTATION_UNVERIFIED` hold entry instead of a
+`rotate`/`promote` item. Failed-batch rows never count as rotations, and verification order
+comes from `checked_at` under the recording batch's committed status, not row IDs. Revoked
+credentials are exempt. Repeating `plan --now T` against an unchanged ledger yields the same
+`batch_id` and byte-identical output.
+
 Rotation is transactional: any failure rolls back all credential changes and persists the
 failure reason on the batch and failed item. Re-running a completed batch returns all
-`skipped`; retrying a failed batch is allowed after the cause is corrected.
+`skipped`; retrying a failed batch is allowed after the cause is corrected. A batch whose
+actionable items have since become gated is refused before any state change.
 
 ## Tests
 
@@ -146,10 +155,11 @@ failure reason on the batch and failed item. Re-running a completed batch return
 pytest -q
 ```
 
-The suite contains **62 collected tests** covering configuration, schema/transactions,
+The suite contains **78 collected tests** covering configuration, schema/transactions,
 registry validation, state transitions, planning, rotation/idempotency/rollback, stub
-verification (valid, invalid, unknown, timeout, connection refused), resolution and
-fallbacks, audit, reports, HTTP handlers, and an end-to-end two-database determinism check.
+verification (valid, invalid, unknown, timeout, connection refused), the post-rotation
+gate and its temporal contract, resolution and fallbacks, audit, reports, HTTP handlers,
+and an end-to-end two-database determinism check.
 The project targets **≥80% line coverage** (coverage is a stated target, not a pytest
 dependency). The delivery is within the 2,500–4,500 line Python budget including tests, and
 every Python file is ≤300 lines.
@@ -184,7 +194,7 @@ credrot/
 │  └─ web/                    Local template + CSS
 ├─ fixtures/                  Synthetic YAML data and stub rules
 ├─ scripts/                   run_demo.sh, run_checks.sh
-└─ tests/                     62 tests across 12 modules + conftest
+└─ tests/                     78 tests across 13 modules + conftest
 ```
 
 ## Documentation

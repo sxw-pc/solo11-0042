@@ -86,8 +86,9 @@ state to `expired` inside the rotation transaction before renewing it.
 
 ## 3. Plan algorithm
 
-`build_plan(credentials, tasks, policy, now)` is pure: it performs no I/O and does not read
-the wall clock.
+`build_plan(credentials, tasks, policy, now, gates=None)` is pure: it performs no I/O
+and does not read the wall clock. The optional `gates` mapping is the output of
+`gating.load_gates` (see section 3.1); omitting it means no gate applies.
 
 ```text
 1. Normalize now to UTC and index credentials/tasks.
@@ -106,15 +107,19 @@ the wall clock.
      count final-state active candidates
      while count < min_active:
          choose the best standby by binding rank/ID
+         skip gated credentials (their unverified rotation is unresolved)
          upgrade the existing rotate item to target active, or emit promote(item)
          urgency = REDUNDANCY_LOW (3)
      if coverage still short: record task:role in active_deficits
 5. Compute standby coverage for every task; record
    max(0, backup_margin - standby) in backup_deficits. This is an observation:
    a plan cannot invent credentials.
-6. Sort items by (urgency, minimum task priority, credential_id).
-7. Truncate to policy.max_items_per_plan and record the truncation count.
-8. Derive batch ID from format_time(now) plus normalized item keys.
+6. Replace every gated credential's entry with a hold item
+   (action=hold, reason_code=POST_ROTATION_UNVERIFIED, urgency 4).
+7. Sort items by (urgency, minimum task priority, credential_id).
+8. Truncate actionable items to policy.max_items_per_plan and record the
+   truncation count. Hold items are observations and are never truncated.
+9. Derive batch ID from format_time(now) plus normalized item keys.
 ```
 
 The planner guarantees a stable order and uses integer day counts. If several credentials
@@ -125,7 +130,55 @@ upgrade an expiring standby's target from standby to active.
 `batch_id = BATCH-<YYYYMMDDTHHMMSSZ>-<first 10 hex chars of sha256(payload)>`, where
 `payload` contains the normalized timestamp and item
 `(credential_id, action, target_state, reason_code)` tuples. No random or process-local data
-is included.
+is included. Hold items participate, so the same fixed clock and ledger produce byte-identical
+plan JSON, Markdown, and batch IDs across repeated runs.
+
+### 3.1 Post-rotation verification gate
+
+Planning is no longer a function of the credential row alone: it also reads the temporal
+relationship between `rotation_items` and `verifications`. `gating.load_gates(db,
+credentials, now)` returns a `GateDecision` per credential; `build_plan` turns each decision
+into a visible hold entry.
+
+**Rotation evidence.** A rotation is established only when its *batch* committed. In the
+executor all items run inside one `BEGIN IMMEDIATE` transaction; on failure the credential
+updates roll back and only a `failed` row (`result=failed, ok=0`) is written afterwards for
+evidence. `latest_successful_rotations` therefore selects only rows where
+`rotation_batches.status = 'completed'` and `rotation_items.action = 'rotate'` and
+`result = 'executed'`. Rows from failed batches and `skipped` rows are not evidence. Ordering
+uses the batch's committed `executed_at`, not the item's `at` (identical for every item in a
+batch anyway) and not the auto-increment row ID.
+
+**Verification evidence.** `latest_valid_verifications` selects `outcome = 'valid'` rows and
+orders them by `checked_at`, never by `MAX(id)`: verification batches can insert a row with an
+earlier timestamp after one with a later timestamp. A `valid` row is only counted when it is
+consistent with the batch that recorded it: an unattributed observation (`batch_id` null) is
+standalone evidence, a batch-scoped observation must belong to a batch whose status is
+`completed`, and every batch-scoped row written for that credential at that timestamp must
+itself be `valid`. This rejects a stray `valid` row left behind when a verification batch
+rolls back.
+
+**Decision.** For each credential that is not effectively `revoked` and has committed
+rotation evidence at or before `now`, the credential is gated unless its latest valid
+verification is *strictly later* than the rotation's committed instant. Equality does not
+count: with a fixed clock, `rotate --now T` then `verify --now T` produces `executed_at =
+checked_at = T`, and ordering is ambiguous, so the conservative branch wins. Credentials
+that never committed a rotation are never gated, so a failed batch cannot create a gate.
+
+**Output.** A gated credential appears as `action=hold`, `reason_code=POST_ROTATION_UNVERIFIED`,
+`from_state == target_state == current effective state`, with a human reason naming the
+rotation batch and its timestamp. The plan summary carries `post_rotation_gated` (sorted IDs)
+and `gate_evidence` (rotation batch, `rotated_at`, `last_valid_verification_at`) per gated
+credential. Hold items are visible in plan JSON and Markdown, in the stored batch plan, in the
+report's batch detail, and in the archive snapshot (once the batch is executed, where each
+hold item is persisted as `skipped`). The `batch_id` digest includes the hold items, so a
+gate changes the batch identity.
+
+**Execution.** A hold item is observed, not acted on: `rotate` executes a hold batch as a
+completed no-op and never changes state. If an actionable `rotate`/`promote` item is executed
+for a credential that has become gated since the plan was generated, the executor refuses the
+batch before opening the credential transaction and records `rotation.failed`. Planning is
+therefore never blocked by the gate, but no rotation may proceed on unverified evidence.
 
 ## 4. Rotation semantics
 
@@ -159,6 +212,12 @@ written in the same transaction.
 **Idempotency.** A completed batch is not re-executed. Calling rotate again returns the plan
 items with `result=skipped`, `ok=1`, `executed=0`, and no state changes. Empty plans complete
 cleanly. Promotion items that already reached `active` at execution time are marked skipped.
+
+**Gate refusal.** Before opening the transaction, the executor re-evaluates the post-rotation
+gate (section 3.1) for every credential with a `rotate`/`promote` item in the batch. If any of them
+is now gated - because a rotation committed or a valid verification aged out after the plan
+was made - the batch fails with `rotation.failed` and no credential is touched. Hold items
+never trigger this refusal; a plan made entirely of hold items completes as a no-op.
 
 ## 5. Verification and resolution
 

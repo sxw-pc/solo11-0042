@@ -10,12 +10,14 @@ from .audit import AuditLog
 from .clock import Clock, format_time
 from .config import Policy
 from .db import Database
+from .gating import POST_ROTATION_UNVERIFIED, load_gates
 from .state_machine import StateMachine
 from .store import (
     canonical_json,
     get_batch,
     get_credential,
     insert_rotation_item,
+    load_credentials,
     set_batch_result,
     update_credential,
 )
@@ -42,14 +44,11 @@ class RotationResult:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "batch_id": self.batch_id,
-            "status": self.status,
-            "items": self.items,
-            "executed": self.executed,
-            "skipped": self.skipped,
-            "failed": self.failed,
-            "summary": self.summary,
-            "error": self.error,
+            field: getattr(self, field)
+            for field in (
+                "batch_id", "status", "items", "executed", "skipped",
+                "failed", "summary", "error",
+            )
         }
 
 
@@ -69,7 +68,27 @@ def rotate_batch(
     machine = StateMachine(audit=audit, clock=clock)
     results: list[dict[str, Any]] = []
     executed = skipped = 0
-    failed_item: dict[str, Any] | None = None
+    failed_item = None
+    actionable = {item.get("credential_id") for item in plan_items
+                  if item.get("action") in {"rotate", "promote"}}
+    gated = sorted(actionable & set(load_gates(db, load_credentials(db), now)))
+    if gated:
+        # The plan predates a committed rotation or its re-verification, so its
+        # actionable items no longer rest on valid evidence. Hold-only batches
+        # have no rotate/promote entries and proceed as a harmless no-op.
+        reason = ("post-rotation verification gate: " + ", ".join(gated)
+                  + " rotated without a later valid verification")
+        hold = {
+            "credential_id": gated[0], "action": "hold",
+            "from_state": "unchanged", "to_state": "unchanged",
+            "reason_code": POST_ROTATION_UNVERIFIED, "result": "failed",
+            "ok": False, "failure_reason": reason,
+        }
+        _record_failure(db, audit, batch, batch_id, hold, reason, now)
+        return RotationResult(
+            batch_id, "failed", [hold], 0, 0, 1,
+            _execution(0, 0, len(plan_items), 1), reason,
+        )
     try:
         with db.transaction() as conn:
             for item in plan_items:
@@ -86,12 +105,7 @@ def rotate_batch(
                 )
             failed_item = None
             summary = dict(batch["summary"])
-            summary["execution"] = {
-                "executed": executed,
-                "skipped": skipped,
-                "failed": 0,
-                "total": len(plan_items),
-            }
+            summary["execution"] = _execution(executed, skipped, len(plan_items), 0)
             conn.execute(
                 """UPDATE rotation_batches
                    SET status = 'completed', executed_at = ?, failure_reason = NULL,
@@ -115,19 +129,17 @@ def rotate_batch(
         )
     except Exception as exc:
         reason = str(exc) or exc.__class__.__name__
-        failed_row = (
-            _result(failed_item, "failed") if failed_item is not None else None
-        )
+        failed_row = _result(failed_item, "failed") if failed_item else None
         if failed_row is not None:
             failed_row["failure_reason"] = reason
-        _record_failure(
-            db, audit, batch, batch_id, failed_item, reason, now
-        )
-        return RotationResult(
-            batch_id, "failed", [failed_row] if failed_row else [], 0, 0, 1,
-            {"executed": 0, "skipped": 0, "failed": 1, "total": len(plan_items)},
-            reason,
-        )
+        _record_failure(db, audit, batch, batch_id, failed_item, reason, now)
+        return RotationResult(batch_id, "failed",
+            [failed_row] if failed_row else [],
+            0, 0, 1, _execution(0, 0, len(plan_items), 1), reason)
+
+
+def _execution(executed: int, skipped: int, total: int, failed: int) -> dict[str, int]:
+    return dict(executed=executed, skipped=skipped, failed=failed, total=total)
 
 
 def _apply_item(
@@ -154,20 +166,26 @@ def _apply_item(
         raise RotationAbort(f"{credential_id}: unsupported target state {target}")
 
     if action == "promote":
-        if credential.effective_state(now) == "active":
+        state = credential.effective_state(now)
+        if state == "active":
             before["result"] = "skipped"
             before["failure_reason"] = "target state already reached"
             return before
-        if credential.effective_state(now) != "standby":
-            raise RotationAbort(
-                f"{credential_id}: cannot promote from "
-                f"{credential.effective_state(now)}"
-            )
+        if state != "standby":
+            raise RotationAbort(f"{credential_id}: cannot promote from {state}")
         updated = machine.transition(
             credential, "active", actor="rotator", reason=reason,
             at=now, conn=conn, batch_id=batch_id,
         )
         update_credential(conn, updated, now)
+        return before
+
+    if action == "hold":
+        if item.get("reason_code") != POST_ROTATION_UNVERIFIED:
+            raise RotationAbort(f"{credential_id}: unsupported action hold")
+        # Observed, not actionable: no state change is authorized.
+        before["result"] = "skipped"
+        before["failure_reason"] = "post-rotation verification gate; no state change"
         return before
 
     if action != "rotate":
@@ -229,11 +247,9 @@ def _result(item: dict[str, Any], result: str) -> dict[str, Any]:
 def _already_completed(
     batch_id: str, items: list[dict[str, Any]], summary: dict[str, Any]
 ) -> RotationResult:
-    results = []
-    for item in items:
-        row = _result(item, "skipped")
-        row["failure_reason"] = "batch already completed; no state change"
-        results.append(row)
+    results = [dict(_result(item, "skipped"),
+        failure_reason="batch already completed; no state change")
+        for item in items]
     return RotationResult(
         batch_id, "completed", results, 0, len(results), 0,
         dict(summary), None,
@@ -249,11 +265,7 @@ def _record_failure(
         db, batch_id, "failed", now, summary=dict(batch["summary"]),
         failure_reason=reason,
     )
-    failed_credential = (
-        failed_item.get("credential_id") if failed_item is not None else None
-    )
-    if failed_credential is not None:
-        item = failed_item
+    if failed_item is not None and failed_item.get("credential_id"):
         conn = db.connect()
         try:
             conn.execute(
@@ -262,10 +274,12 @@ def _record_failure(
                  reason_code, result, ok, failure_reason, at)
                 VALUES (?, ?, ?, ?, ?, ?, 'failed', 0, ?, ?)""",
                 (
-                    batch_id, failed_credential, item.get("action", "rotate"),
-                    item.get("from_state", "unknown"),
-                    item.get("target_state", "unknown"),
-                    item.get("reason_code", "UNKNOWN"), reason, format_time(now),
+                    batch_id, failed_item["credential_id"],
+                    failed_item.get("action", "rotate"),
+                    failed_item.get("from_state", "unknown"),
+                    failed_item.get("target_state", "unknown"),
+                    failed_item.get("reason_code", "UNKNOWN"), reason,
+                    format_time(now),
                 ),
             )
             conn.commit()

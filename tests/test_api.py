@@ -43,6 +43,37 @@ def test_plan_api_persists_batch(client, db):
     assert client.get("/api/plan?now=bad").status_code == 400
 
 
+def test_plan_api_surfaces_post_rotation_gate(client, db, policy):
+    """The API plans from persisted evidence, same as the CLI."""
+    from credrot.clock import FixedClock
+    from credrot.model import Verification
+    from credrot.rotator import rotate_batch
+    from credrot.verifier import verify_all
+
+    class Client:
+        def check(self, credential, checked_at, batch_id=None):
+            outcome = "invalid" if credential.id == "CRED-GAMMA-SPARE-01" else "valid"
+            return Verification(
+                credential_id=credential.id, outcome=outcome,
+                code=outcome.upper(), checked_at=checked_at,
+                batch_id=batch_id, latency_ms=0,
+            )
+
+    plan = client.get("/api/plan?now=2025-01-01T00:00:00Z").get_json()
+    fixed = FixedClock("2025-01-01T00:00:00Z")
+    rotate_batch(db, plan["batch_id"], fixed, policy)
+    verify_all(
+        db, fixed, policy, batch_id=plan["batch_id"], client=Client()
+    )
+    gated = client.get("/api/plan?now=2025-01-01T00:10:00Z")
+    assert gated.status_code == 200
+    assert "POST_ROTATION_UNVERIFIED" in gated.get_data(as_text=True)
+    payload = gated.get_json()
+    assert payload["summary"]["post_rotation_gated"] == [
+        "CRED-ALPHA-READER-01", "CRED-BETA-READER-01",
+    ]
+
+
 def test_rotate_api_accepts_only_known_batch(client):
     plan = client.get("/api/plan?now=2025-01-01T00:00:00Z").get_json()
     response = client.post("/api/rotate", json={"batch_id": plan["batch_id"]})

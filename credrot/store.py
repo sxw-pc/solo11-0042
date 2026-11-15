@@ -215,6 +215,54 @@ def list_rotation_items(db: Database, batch_id: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def latest_successful_rotations(
+    db: Database, as_of: datetime | None = None
+) -> dict[str, dict[str, Any]]:
+    """Most recent committed rotation per credential.
+
+    A rotation is only established when its whole batch committed. Rows from
+    failed batches (written after the credential transaction rolled back) and
+    rows that were merely skipped inside a completed batch are therefore not
+    evidence. The batch's ``executed_at`` is the instant the rotation became
+    durable; the item timestamp is not used for ordering.
+    """
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            """SELECT ri.credential_id, ri.batch_id, ri.action, ri.result,
+                      rb.executed_at
+               FROM rotation_items ri
+               JOIN rotation_batches rb ON rb.batch_id = ri.batch_id
+               WHERE rb.status = 'completed'
+                 AND ri.action = 'rotate'
+                 AND ri.result = 'executed'"""
+        ).fetchall()
+    finally:
+        conn.close()
+
+    cutoff = parse_time(as_of) if as_of is not None else None
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row["executed_at"] is None:
+            continue
+        executed_at = parse_time(row["executed_at"])
+        if cutoff is not None and executed_at > cutoff:
+            continue
+        candidate = {
+            "credential_id": row["credential_id"],
+            "batch_id": row["batch_id"],
+            "action": row["action"],
+            "result": row["result"],
+            "executed_at": format_time(executed_at),
+        }
+        current = latest.get(row["credential_id"])
+        if current is None or (
+            candidate["executed_at"], candidate["batch_id"]
+        ) > (current["executed_at"], current["batch_id"]):
+            latest[row["credential_id"]] = candidate
+    return latest
+
+
 def set_batch_result(
     db: Database, batch_id: str, status: str, at: datetime,
     summary: dict[str, Any] | None = None, failure_reason: str | None = None,

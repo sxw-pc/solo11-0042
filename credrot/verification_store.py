@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from typing import Any
 
+from .clock import format_time, parse_time
 from .db import Database
 from .model import Verification
 
@@ -72,3 +74,62 @@ def list_verifications(
     finally:
         conn.close()
     return [_verification_dict(row) for row in rows]
+
+
+def latest_valid_verifications(
+    db: Database, as_of: datetime | None = None
+) -> dict[str, dict[str, Any]]:
+    """Most recent ``valid`` observation per credential, ordered by time.
+
+    ``MAX(id)`` is not usable here: observations for one credential can be
+    inserted after an earlier check with a later ``checked_at``. A row only
+    counts when its outcome is ``valid`` *and* its batch context agrees with
+    the timestamp: an unattributed check (no batch) is standalone evidence,
+    while a batch-scoped check must belong to a batch that committed, and
+    every batch-scoped observation of that credential written at the same
+    timestamp must itself be ``valid``. That rejects e.g. a ``valid`` row left
+    behind for a batch whose other observations were rolled back.
+    """
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            """SELECT v.credential_id, v.batch_id, v.outcome, v.code,
+                      v.checked_at, v.latency_ms, rb.status AS batch_status
+               FROM verifications v
+               LEFT JOIN rotation_batches rb ON rb.batch_id = v.batch_id"""
+        ).fetchall()
+    finally:
+        conn.close()
+
+    cutoff = parse_time(as_of) if as_of is not None else None
+    by_stamp: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        if row["batch_id"] is not None and row["batch_status"] != "completed":
+            continue
+        checked_at = parse_time(row["checked_at"])
+        if cutoff is not None and checked_at > cutoff:
+            continue
+        by_stamp.setdefault((row["credential_id"], format_time(checked_at)), []).append(
+            row
+        )
+
+    latest: dict[str, dict[str, Any]] = {}
+    for (credential_id, stamp), group in by_stamp.items():
+        if any(member["outcome"] != "valid" for member in group):
+            continue
+        representative = min(group, key=lambda member: member["batch_id"] or "")
+        candidate = {
+            "credential_id": credential_id,
+            "outcome": representative["outcome"],
+            "code": representative["code"],
+            "checked_at": stamp,
+            "batch_id": representative["batch_id"],
+            "latency_ms": representative["latency_ms"],
+        }
+        current = latest.get(credential_id)
+        if current is None or (candidate["checked_at"], candidate["batch_id"] or "") > (
+            current["checked_at"],
+            current["batch_id"] or "",
+        ):
+            latest[credential_id] = candidate
+    return latest

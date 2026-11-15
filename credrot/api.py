@@ -9,6 +9,7 @@ from flask import Blueprint, Response, jsonify, request
 from .clock import Clock, ClockError, format_time, parse_time
 from .config import Policy
 from .db import Database
+from .gating import load_gates
 from .planner import build_plan
 from .report import ReportError, build_report, render_json
 from .report_markdown import render_markdown
@@ -60,8 +61,10 @@ def create_api_blueprint(db: Database, clock: Clock, policy: Policy) -> Blueprin
             now = _now()
         except ClockError as exc:
             return _error(str(exc), 400)
+        credentials = load_credentials(db)
         plan_value = build_plan(
-            load_credentials(db), load_tasks(db), policy, now
+            credentials, load_tasks(db), policy, now,
+            gates=load_gates(db, credentials, now),
         )
         inserted = save_plan(db, plan_value)
         payload = plan_value.to_dict()

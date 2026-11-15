@@ -63,3 +63,74 @@ def test_plan_markdown_export(registry, policy, clock):
     assert plan.batch_id in markdown
     assert "CRITICAL_EXPIRY" in markdown
     assert "| credential |" in markdown
+
+
+def _revoke(db, *credential_ids):
+    with db.transaction() as conn:
+        for credential_id in credential_ids:
+            conn.execute(
+                "UPDATE credentials SET status = 'revoked' WHERE id = ?",
+                (credential_id,),
+            )
+
+
+def test_report_separates_binding_repairs_from_degraded(
+    db, registry, policy, clock, stub
+):
+    plan = _worked_batch(db, registry, policy, clock, stub)
+    _revoke(db, "CRED-ALPHA-READER-01", "CRED-ALPHA-READER-02")
+    report = build_report(db, clock, policy, plan.batch_id)
+
+    # Structural break lands in the itemized repair checklist...
+    assert report["repairs"] == [
+        {
+            "task_id": "TASK-ALPHA-DAILY",
+            "role": "reader",
+            "reason": "ALL_BINDINGS_REVOKED",
+            "revoked": ["CRED-ALPHA-READER-01", "CRED-ALPHA-READER-02"],
+        }
+    ]
+    # ...and as its own failures kind, next to the preserved resolution kind.
+    kinds = {failure["kind"] for failure in report["failures"]}
+    assert "binding_repair" in kinds
+    assert "resolution" in kinds
+    [repair_failure] = [
+        failure
+        for failure in report["failures"]
+        if failure["kind"] == "binding_repair"
+    ]
+    assert repair_failure["subject"] == "TASK-ALPHA-DAILY"
+    assert "reader" in repair_failure["message"]
+    assert "CRED-ALPHA-READER-02" in repair_failure["message"]
+
+    # Runtime degradations stay out of the repair list but remain visible.
+    task_map = {task["task_id"]: task for task in report["tasks"]}
+    [reader] = task_map["TASK-ALPHA-DAILY"]["role_integrity"]
+    assert reader["status"] == "repair"
+    [admin] = task_map["TASK-GAMMA-AUDIT"]["role_integrity"]
+    assert admin["status"] == "degraded"
+    assert admin["reason"] == "NO_USABLE_CANDIDATE"
+    # A revoked backup binding on a resolved role is informational only.
+    [gamma_reader] = task_map["TASK-GAMMA-SYNC"]["role_integrity"]
+    assert gamma_reader["status"] == "ok"
+    assert gamma_reader["revoked"] == ["CRED-GAMMA-OLD-01"]
+
+    markdown = render_markdown(report)
+    assert "## Binding repairs" in markdown
+    assert "ALL_BINDINGS_REVOKED" in markdown
+    assert "reader:repair" in markdown
+
+
+def test_report_has_no_repairs_for_runtime_degradation(
+    db, registry, policy, clock, stub
+):
+    plan = _worked_batch(db, registry, policy, clock, stub)
+    report = build_report(db, clock, policy, plan.batch_id)
+    assert report["repairs"] == []
+    assert all(
+        failure["kind"] != "binding_repair" for failure in report["failures"]
+    )
+    task_map = {task["task_id"]: task for task in report["tasks"]}
+    [admin] = task_map["TASK-GAMMA-AUDIT"]["role_integrity"]
+    assert admin["status"] == "degraded"
+    assert "No binding repairs required." in render_markdown(report)

@@ -63,17 +63,33 @@ def render_markdown(report: dict[str, Any]) -> str:
         )
 
     lines.extend(["", "## Task resolvability", "",
-                  "| task | ok | code | degraded | roles |",
-                  "| --- | --- | --- | --- | --- |"])
+                  "| task | ok | code | degraded | roles | integrity |",
+                  "| --- | --- | --- | --- | --- | --- |"])
     for task in report["tasks"]:
         roles = ", ".join(
             f"{role}={value['credential_id'] if value else '-'}"
             for role, value in task["resolved"].items()
         )
+        integrity = ", ".join(
+            f"{entry['role']}:{entry['status']}"
+            for entry in task.get("role_integrity", [])
+        )
         lines.append(
             f"| {task['task_id']} | {str(task['ok']).lower()} | {task['code']} | "
-            f"{str(task['degraded']).lower()} | {roles or '-'} |"
+            f"{str(task['degraded']).lower()} | {roles or '-'} | {integrity or '-'} |"
         )
+
+    lines.extend(["", "## Binding repairs", ""])
+    repairs = report.get("repairs", [])
+    if not repairs:
+        lines.append("No binding repairs required.")
+    else:
+        for repair in repairs:
+            revoked = ", ".join(repair["revoked"]) if repair["revoked"] else "-"
+            lines.append(
+                f"- `{repair['task_id']}` role `{repair['role']}`: "
+                f"{repair['reason']} (revoked: {revoked})"
+            )
 
     lines.extend(["", "## Failures", ""])
     if not report["failures"]:

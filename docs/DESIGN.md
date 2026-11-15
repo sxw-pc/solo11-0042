@@ -196,6 +196,18 @@ The resolver evaluates each bound candidate for each required role:
 5. If a role has no candidate, return `NO_BINDINGS`, `NO_MATCHING_ROLE`, or
    `NO_HEALTHY_CANDIDATE` with every attempt and failure reason. No bare exception escapes.
 
+Alongside the task-level code, the resolver classifies each required role's reference
+integrity in `role_integrity` (never merged across roles):
+
+- `repair`: structural break — the role has no bound credential, or every bound credential
+  is `revoked`. Only manual re-binding fixes it; the role is listed in the report's repair
+  checklist with the revoked credential ids.
+- `degraded`: runtime condition — a non-revoked binding exists but none is usable
+  (expired, unverified, stale or failed verification), or a standby/unverified candidate
+  was selected. Rotation or re-verification can heal it; it never enters the repair
+  checklist.
+- `ok`: resolved with an active, verified credential.
+
 Resolution failures are audited (`resolution.failed`); reports call the resolver with audit
 writes disabled so read-only rendering cannot mutate the ledger.
 
@@ -222,8 +234,11 @@ failures, and resolver results using the injected clock. It emits:
 - credential overview with stored and effective state;
 - rotation batch summary and item outcomes;
 - health matrix and conclusion;
-- per-task resolvability;
-- deduplicated failure details from tasks, batches, and failure audit events.
+- per-task resolvability with per-role integrity verdicts;
+- an itemized binding-repair checklist (`repairs`: task, role, reason, revoked ids)
+  covering only structural breaks, kept separate from runtime degradations;
+- deduplicated failure details from tasks, batches, repairs (`binding_repair` kind), and
+  failure audit events.
 
 JSON is rendered with `sort_keys=True` and sorted arrays. Markdown is generated solely from
 the JSON payload. No latency, auto-increment row ID, or wall-clock value appears. With a

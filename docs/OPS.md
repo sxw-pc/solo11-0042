@@ -140,7 +140,15 @@ Symptoms: `verify` results have `STUB_UNREACHABLE` or `TIMEOUT`; resolution fail
 
 ### A task cannot be resolved
 
-Inspect `/api/credentials` and the resolver's `attempts` array:
+Inspect `/api/credentials` and the resolver's `attempts` array, then check the per-role
+`role_integrity` verdicts in the `resolve` output (or the report's `repairs` checklist):
+
+- `repair` (`NO_BOUND_CREDENTIAL` / `ALL_BINDINGS_REVOKED`): the binding itself is broken.
+  Re-bind a healthy credential to the task; rotation and verification cannot heal this.
+- `degraded` (`NO_USABLE_CANDIDATE`, `STANDBY_SELECTED`, `UNVERIFIED_SELECTED`): a runtime
+  gap. Run `verify`, complete the pending rotation, or wait for the next plan.
+
+Per-attempt reasons in the `attempts` array:
 
 - `UNVERIFIED`: no fresh observation exists. Run `verify`.
 - `STALE_VERIFICATION`: the latest observation is older than

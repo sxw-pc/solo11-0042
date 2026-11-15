@@ -81,7 +81,8 @@ def build_report(
         resolve(db, task.id, clock, policy, write_audit=False)
         for task in sorted(tasks.values(), key=lambda item: (item.priority, item.id))
     ]
-    failures = _failures(batch, task_results, db)
+    repairs = _repairs(task_results)
+    failures = _failures(batch, task_results, repairs, db)
     report = {
         "generated_at": format_time(now),
         "credentials": [
@@ -93,6 +94,7 @@ def build_report(
         "health": health,
         "tasks": [_task_summary(result) for result in task_results],
         "task_details": task_results,
+        "repairs": repairs,
         "failures": failures,
     }
     return report
@@ -165,11 +167,33 @@ def _task_summary(result: dict[str, Any]) -> dict[str, Any]:
         "code": result["code"],
         "degraded": result["degraded"],
         "resolved": result["credentials"],
+        "role_integrity": result["role_integrity"],
     }
 
 
+def _repairs(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Itemized binding-repair checklist; degraded roles never appear here."""
+    repairs: list[dict[str, Any]] = []
+    for task in tasks:
+        for entry in task.get("role_integrity", []):
+            if entry["status"] != "repair":
+                continue
+            repairs.append(
+                {
+                    "task_id": task["task_id"],
+                    "role": entry["role"],
+                    "reason": entry["reason"],
+                    "revoked": list(entry["revoked"]),
+                }
+            )
+    return sorted(repairs, key=lambda item: (item["task_id"], item["role"]))
+
+
 def _failures(
-    batch: dict[str, Any] | None, tasks: list[dict[str, Any]], db: Database
+    batch: dict[str, Any] | None,
+    tasks: list[dict[str, Any]],
+    repairs: list[dict[str, Any]],
+    db: Database,
 ) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
     if batch is not None and batch.get("failure_reason"):
@@ -189,6 +213,22 @@ def _failures(
                     "message": f"{task['code']}: {task['message']}",
                 }
             )
+    for repair in repairs:
+        detail = (
+            f"revoked bindings: {', '.join(repair['revoked'])}"
+            if repair["revoked"]
+            else "no bound credential"
+        )
+        failures.append(
+            {
+                "kind": "binding_repair",
+                "subject": repair["task_id"],
+                "message": (
+                    f"role {repair['role']} needs manual re-binding "
+                    f"({repair['reason']}; {detail})"
+                ),
+            }
+        )
     for event in _failure_events(db):
         failures.append(
             {

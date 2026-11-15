@@ -85,3 +85,92 @@ def test_multi_role_task_resolves_each_role(db, policy, clock, stub):
     assert result["ok"] is True
     assert set(result["credentials"]) == {"reader", "writer"}
     assert result["credentials"]["writer"]["credential_id"] == "CRED-BETA-WRITER-01"
+
+
+def _revoke(db, *credential_ids):
+    with db.transaction() as conn:
+        for credential_id in credential_ids:
+            conn.execute(
+                "UPDATE credentials SET status = 'revoked' WHERE id = ?",
+                (credential_id,),
+            )
+
+
+def _invalidate(db, clock, credential_id):
+    with db.transaction() as conn:
+        insert_verification(
+            conn,
+            Verification(
+                credential_id=credential_id,
+                outcome="invalid",
+                code="INVALID",
+                checked_at=clock.now(),
+            ),
+        )
+
+
+def test_all_bindings_revoked_marks_role_for_repair(db, policy, clock, stub):
+    _observe(db, policy, clock, stub)
+    _revoke(db, "CRED-ALPHA-READER-01", "CRED-ALPHA-READER-02")
+    result = resolve(db, "TASK-ALPHA-DAILY", clock, policy)
+    assert result["ok"] is False
+    assert result["code"] == "NO_HEALTHY_CANDIDATE"
+    [reader] = result["role_integrity"]
+    assert reader["role"] == "reader"
+    assert reader["status"] == "repair"
+    assert reader["reason"] == "ALL_BINDINGS_REVOKED"
+    assert reader["bound"] == ["CRED-ALPHA-READER-01", "CRED-ALPHA-READER-02"]
+    assert reader["revoked"] == ["CRED-ALPHA-READER-01", "CRED-ALPHA-READER-02"]
+    assert reader["selected"] is None
+    events = AuditLog(db, clock).list_events(action="resolution.failed")
+    assert events[-1]["subject"] == "TASK-ALPHA-DAILY"
+
+
+def test_unusable_non_revoked_standby_is_degraded_not_repair(db, policy, clock):
+    # Active binding revoked, standby binding survives but is unverified:
+    # a runtime gap, not a structural break.
+    _revoke(db, "CRED-ALPHA-READER-01")
+    result = resolve(db, "TASK-ALPHA-DAILY", clock, policy)
+    assert result["ok"] is False
+    [reader] = result["role_integrity"]
+    assert reader["status"] == "degraded"
+    assert reader["reason"] == "NO_USABLE_CANDIDATE"
+    assert reader["revoked"] == ["CRED-ALPHA-READER-01"]
+    assert reader["selected"] is None
+
+
+def test_repair_and_degraded_roles_stay_separate(db, policy, clock, stub):
+    _observe(db, policy, clock, stub)
+    _revoke(db, "CRED-BETA-READER-01", "CRED-BETA-READER-02")
+    _invalidate(db, clock, "CRED-BETA-WRITER-01")
+    result = resolve(db, "TASK-BETA-DAILY", clock, policy)
+    assert result["ok"] is False
+    assert result["degraded"] is True
+    by_role = {entry["role"]: entry for entry in result["role_integrity"]}
+    assert by_role["reader"]["status"] == "repair"
+    assert by_role["reader"]["reason"] == "ALL_BINDINGS_REVOKED"
+    assert by_role["reader"]["revoked"] == [
+        "CRED-BETA-READER-01", "CRED-BETA-READER-02",
+    ]
+    assert by_role["writer"]["status"] == "degraded"
+    assert by_role["writer"]["reason"] == "STANDBY_SELECTED"
+    assert by_role["writer"]["selected"] == "CRED-BETA-WRITER-02"
+
+
+def test_task_without_bindings_marks_every_role_for_repair(db, policy, clock):
+    with db.transaction() as conn:
+        conn.execute(
+            "DELETE FROM task_bindings WHERE task_id = ?", ("TASK-ALPHA-EXPORT",)
+        )
+    result = resolve(db, "TASK-ALPHA-EXPORT", clock, policy)
+    assert result["code"] == "NO_BINDINGS"
+    assert result["role_integrity"] == [
+        {
+            "role": "writer",
+            "status": "repair",
+            "reason": "NO_BOUND_CREDENTIAL",
+            "bound": [],
+            "revoked": [],
+            "selected": None,
+        }
+    ]

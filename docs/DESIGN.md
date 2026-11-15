@@ -221,6 +221,7 @@ failures, and resolver results using the injected clock. It emits:
 
 - credential overview with stored and effective state;
 - rotation batch summary and item outcomes;
+- a `state_history` section from the shared state-history view (see below);
 - health matrix and conclusion;
 - per-task resolvability;
 - deduplicated failure details from tasks, batches, and failure audit events.
@@ -229,9 +230,24 @@ JSON is rendered with `sort_keys=True` and sorted arrays. Markdown is generated 
 the JSON payload. No latency, auto-increment row ID, or wall-clock value appears. With a
 fixed clock and unchanged ledger, both formats are byte-identical across runs.
 
-`archive_batch` exports the selected batch, its plan, rotation items, batch-scoped
-verifications, batch-scoped audits, and current credential metadata. It is an export
-snapshot, not a historical time-travel database.
+**State-history view.** `state_history.build_state_history` is the single read-only
+derivation of per-credential migration sequences `(from_state, to_state, reason, batch_id,
+at)`, used by both reports and archives. Entries come from `credential.transition` and
+`credential.renewed` audit events in commit order — the only evidence that a migration
+actually happened — enriched with the `reason_code` of the corroborating executed rotation
+item. Consequences:
+
+- a `skipped` rotation item never appears (it recorded no transition), and re-running a
+  completed batch adds nothing;
+- clock-driven expiry (`expire_if_due`) appears even though it is never written to
+  `rotation_items`, so the chain `active -> expired -> rotating -> active` stays unbroken;
+- a `credential.renewed` event is a version bump without a state change and appears as a
+  self-loop at the tracked state;
+- a failed batch leaves no entries because its in-transaction audits rolled back.
+
+`archive_batch` exports the selected batch, its plan, rotation items, the same
+`state_history` view, batch-scoped verifications, batch-scoped audits, and current
+credential metadata. It is an export snapshot, not a historical time-travel database.
 
 ## 8. Persistence
 

@@ -7,6 +7,7 @@ from typing import Any
 from .audit import AuditLog
 from .clock import Clock, format_time
 from .db import Database
+from .state_history import build_state_history
 from .store import get_batch, list_rotation_items, load_credentials
 from .verification_store import list_verifications
 
@@ -25,6 +26,7 @@ def archive_batch(
         "archived_at": format_time(now),
         "batch": batch,
         "rotation_items": list_rotation_items(db, batch_id),
+        "state_history": build_state_history(db, clock, batch_id),
         "verifications": list_verifications(db, batch_id),
         "audit_events": audit.list_events(batch_id=batch_id, limit=5000),
         "credentials": [

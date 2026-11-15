@@ -30,16 +30,6 @@ def _verification_dict(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def latest_verification(
-    conn: sqlite3.Connection, credential_id: str
-) -> dict[str, Any] | None:
-    row = conn.execute(
-        "SELECT * FROM verifications WHERE credential_id = ? ORDER BY id DESC LIMIT 1",
-        (credential_id,),
-    ).fetchone()
-    return _verification_dict(row) if row else None
-
-
 def latest_verifications(db: Database) -> dict[str, dict[str, Any]]:
     conn = db.connect()
     try:

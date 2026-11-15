@@ -52,6 +52,22 @@ def render_markdown(report: dict[str, Any]) -> str:
                 f"{item['reason_code']} | {item['result']} |"
             )
 
+    lines.extend(["", "## State history", ""])
+    history = report["state_history"]
+    if not history:
+        lines.append("No credential migrations recorded.")
+    else:
+        lines += [
+            "| credential | from | to | reason | batch | at |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+        for entry in history:
+            lines.append(
+                f"| {entry['credential_id']} | {entry['from_state'] or '-'} | "
+                f"{entry['to_state'] or '-'} | {entry['reason']} | "
+                f"{entry['batch_id'] or '-'} | {entry['at']} |"
+            )
+
     lines.extend(["", "## Health matrix", "",
                   f"Conclusion: **{report['health']['conclusion']}**", "",
                   "| credential | state | outcome | code | checked_at |",

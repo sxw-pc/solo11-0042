@@ -24,7 +24,8 @@ and which verified credential a task should use right now. It never stores a sec
   (`healthy / degraded / failing`).
 - A task resolver that prefers verified active credentials, falls back to verified standby
   credentials, and returns a structured failure explanation when nothing is usable.
-- Deterministic Markdown + JSON reports and batch archive snapshots.
+- Deterministic Markdown + JSON reports and batch archive snapshots, with a
+  read-only credential state-history view derived from the audit trail.
 - A small local Flask API and static home page. No CDN, no browser automation, no cloud SDK.
 
 ## What it is not
@@ -146,10 +147,11 @@ failure reason on the batch and failed item. Re-running a completed batch return
 pytest -q
 ```
 
-The suite contains **62 collected tests** covering configuration, schema/transactions,
+The suite contains **68 collected tests** covering configuration, schema/transactions,
 registry validation, state transitions, planning, rotation/idempotency/rollback, stub
 verification (valid, invalid, unknown, timeout, connection refused), resolution and
-fallbacks, audit, reports, HTTP handlers, and an end-to-end two-database determinism check.
+fallbacks, audit, state history, reports, HTTP handlers, and an end-to-end two-database
+determinism check.
 The project targets **≥80% line coverage** (coverage is a stated target, not a pytest
 dependency). The delivery is within the 2,500–4,500 line Python budget including tests, and
 every Python file is ≤300 lines.
@@ -168,7 +170,7 @@ credrot/
 │  ├─ config.py               Policy loading/validation
 │  ├─ db.py / store.py        SQLite schema, transactions, repositories
 │  ├─ verification_store.py   Verification persistence
-│  ├─ model.py                Credential, Task, PlanItem, RotationPlan, AuditEvent
+│  ├─ model.py                Credential, Task, PlanItem, RotationPlan, Verification
 │  ├─ state_machine.py        Transition whitelist and clock-driven expiry
 │  ├─ registry.py             Fixture validation (accumulates errors)
 │  ├─ planner.py              Pure deterministic plan builder
@@ -176,6 +178,7 @@ credrot/
 │  ├─ verifier.py             Loopback-only client and health conclusion
 │  ├─ resolver.py             Task → verified credential resolution
 │  ├─ audit.py                Append-only audit trail
+│  ├─ state_history.py        Read-only migration view from audit + rotation items
 │  ├─ report.py               Report payload + JSON
 │  ├─ report_markdown.py      Markdown renderer
 │  ├─ plan_export.py          Plan Markdown export
@@ -184,7 +187,7 @@ credrot/
 │  └─ web/                    Local template + CSS
 ├─ fixtures/                  Synthetic YAML data and stub rules
 ├─ scripts/                   run_demo.sh, run_checks.sh
-└─ tests/                     62 tests across 12 modules + conftest
+└─ tests/                     68 tests across 13 modules + conftest
 ```
 
 ## Documentation

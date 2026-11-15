@@ -70,15 +70,6 @@ class Credential:
             "days_to_expiry": self.days_left(now),
         }
 
-    def brief(self, now: datetime) -> dict[str, Any]:
-        return {
-            "credential_id": self.id,
-            "version": self.version,
-            "role": self.role,
-            "state": self.effective_state(now),
-            "fingerprint": self.fingerprint,
-        }
-
 
 @dataclass(frozen=True)
 class Task:
@@ -145,30 +136,6 @@ class RotationPlan:
             "generated_at": format_time(self.generated_at),
             "items": [item.to_dict() for item in self.items],
             "summary": dict(self.summary),
-        }
-
-
-@dataclass(frozen=True)
-class AuditEvent:
-    actor: str
-    action: str
-    subject: str
-    before: Mapping[str, Any]
-    after: Mapping[str, Any]
-    batch_id: str | None
-    reason: str
-    at: datetime
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "actor": self.actor,
-            "action": self.action,
-            "subject": self.subject,
-            "before": dict(self.before),
-            "after": dict(self.after),
-            "batch_id": self.batch_id,
-            "reason": self.reason,
-            "at": format_time(self.at),
         }
 
 

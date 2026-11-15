@@ -253,21 +253,9 @@ def _record_failure(
         failed_item.get("credential_id") if failed_item is not None else None
     )
     if failed_credential is not None:
-        item = failed_item
         conn = db.connect()
         try:
-            conn.execute(
-                """INSERT OR REPLACE INTO rotation_items
-                (batch_id, credential_id, action, from_state, to_state,
-                 reason_code, result, ok, failure_reason, at)
-                VALUES (?, ?, ?, ?, ?, ?, 'failed', 0, ?, ?)""",
-                (
-                    batch_id, failed_credential, item.get("action", "rotate"),
-                    item.get("from_state", "unknown"),
-                    item.get("target_state", "unknown"),
-                    item.get("reason_code", "UNKNOWN"), reason, format_time(now),
-                ),
-            )
+            insert_rotation_item(conn, batch_id, failed_item, "failed", reason, now)
             conn.commit()
         finally:
             conn.close()

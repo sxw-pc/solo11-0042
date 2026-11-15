@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .audit import AuditLog
 from .clock import Clock, format_time
 from .config import Policy
 from .db import Database
 from .resolver import resolve
+from .state_history import build_state_history
 from .store import (
     get_batch,
     list_batches,
@@ -81,7 +83,7 @@ def build_report(
         resolve(db, task.id, clock, policy, write_audit=False)
         for task in sorted(tasks.values(), key=lambda item: (item.priority, item.id))
     ]
-    failures = _failures(batch, task_results, db)
+    failures = _failures(batch, task_results, db, clock)
     report = {
         "generated_at": format_time(now),
         "credentials": [
@@ -90,6 +92,9 @@ def build_report(
         ],
         "batches": list_batches(db, limit=20),
         "batch": _batch_detail(batch, db),
+        "state_history": build_state_history(
+            db, clock, batch["batch_id"] if batch is not None else None
+        ),
         "health": health,
         "tasks": [_task_summary(result) for result in task_results],
         "task_details": task_results,
@@ -169,7 +174,10 @@ def _task_summary(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _failures(
-    batch: dict[str, Any] | None, tasks: list[dict[str, Any]], db: Database
+    batch: dict[str, Any] | None,
+    tasks: list[dict[str, Any]],
+    db: Database,
+    clock: Clock,
 ) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
     if batch is not None and batch.get("failure_reason"):
@@ -189,36 +197,16 @@ def _failures(
                     "message": f"{task['code']}: {task['message']}",
                 }
             )
-    for event in _failure_events(db):
-        failures.append(
-            {
-                "kind": event["action"],
-                "subject": event["subject"],
-                "message": event["reason"],
-            }
-        )
+    for event in AuditLog(db, clock).list_events(limit=5000):
+        if event["action"] in FAILURE_ACTIONS:
+            failures.append(
+                {
+                    "kind": event["action"],
+                    "subject": event["subject"],
+                    "message": event["reason"],
+                }
+            )
     deduped = {
         (item["kind"], item["subject"], item["message"]): item for item in failures
     }
     return [deduped[key] for key in sorted(deduped)]
-
-
-def _failure_events(db: Database) -> list[dict[str, Any]]:
-    conn = db.connect()
-    try:
-        rows = conn.execute(
-            """SELECT at, actor, action, subject, before_json, after_json,
-                      batch_id, reason
-               FROM audit_events ORDER BY at, subject, action, id"""
-        ).fetchall()
-    finally:
-        conn.close()
-    return [
-        {
-            "at": row["at"], "actor": row["actor"], "action": row["action"],
-            "subject": row["subject"], "batch_id": row["batch_id"],
-            "reason": row["reason"],
-        }
-        for row in rows
-        if row["action"] in FAILURE_ACTIONS
-    ]

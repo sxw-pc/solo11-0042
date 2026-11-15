@@ -72,10 +72,15 @@ def _credential(row: sqlite3.Row) -> Credential:
 def load_credentials(db: Database) -> dict[str, Credential]:
     conn = db.connect()
     try:
-        rows = conn.execute("SELECT * FROM credentials ORDER BY id").fetchall()
+        return {credential.id: credential for credential in list_credentials(conn)}
     finally:
         conn.close()
-    return {row["id"]: _credential(row) for row in rows}
+
+
+def list_credentials(conn: sqlite3.Connection) -> list[Credential]:
+    """All credentials, read through an existing (possibly transactional) conn."""
+    rows = conn.execute("SELECT * FROM credentials ORDER BY id").fetchall()
+    return [_credential(row) for row in rows]
 
 
 def load_tasks(db: Database) -> dict[str, Task]:
@@ -112,12 +117,12 @@ def update_credential(
     conn: sqlite3.Connection, credential: Credential, at: datetime
 ) -> None:
     cursor = conn.execute(
-        """UPDATE credentials SET version = ?, issued_at = ?, expires_at = ?,
-           status = ?, updated_at = ? WHERE id = ?""",
+        """UPDATE credentials SET version = ?, synthetic_ref = ?, fingerprint = ?,
+           issued_at = ?, expires_at = ?, status = ?, updated_at = ? WHERE id = ?""",
         (
-            credential.version, format_time(credential.issued_at),
-            format_time(credential.expires_at), credential.status,
-            format_time(at), credential.id,
+            credential.version, credential.synthetic_ref, credential.fingerprint,
+            format_time(credential.issued_at), format_time(credential.expires_at),
+            credential.status, format_time(at), credential.id,
         ),
     )
     if cursor.rowcount != 1:

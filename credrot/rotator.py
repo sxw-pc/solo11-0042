@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from .audit import AuditLog
 from .clock import Clock, format_time
 from .config import Policy
 from .db import Database
+from .model import rotation_identity
 from .state_machine import StateMachine
 from .store import (
     canonical_json,
     get_batch,
     get_credential,
     insert_rotation_item,
+    list_credentials,
     set_batch_result,
     update_credential,
 )
@@ -26,7 +28,10 @@ class UnknownBatch(ValueError):
 
 
 class RotationAbort(Exception):
-    pass
+    """Aborts the batch transaction; ``code`` classifies the failure."""
+    def __init__(self, message: str, *, code: str = "ROTATION_ABORT"):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -39,6 +44,7 @@ class RotationResult:
     failed: int
     summary: dict[str, Any]
     error: str | None = None
+    error_code: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +56,7 @@ class RotationResult:
             "failed": self.failed,
             "summary": self.summary,
             "error": self.error,
+            "error_code": self.error_code,
         }
 
 
@@ -115,6 +122,7 @@ def rotate_batch(
         )
     except Exception as exc:
         reason = str(exc) or exc.__class__.__name__
+        error_code = getattr(exc, "code", None)
         failed_row = (
             _result(failed_item, "failed") if failed_item is not None else None
         )
@@ -126,7 +134,7 @@ def rotate_batch(
         return RotationResult(
             batch_id, "failed", [failed_row] if failed_row else [], 0, 0, 1,
             {"executed": 0, "skipped": 0, "failed": 1, "total": len(plan_items)},
-            reason,
+            reason, error_code,
         )
 
 
@@ -147,11 +155,14 @@ def _apply_item(
 
     credential = get_credential(conn, credential_id)
     if credential is None:
-        raise RotationAbort(f"{credential_id}: credential no longer exists")
+        raise RotationAbort(
+            f"{credential_id}: credential no longer exists", code="CREDENTIAL_MISSING")
     if credential.status == "revoked":
-        raise RotationAbort(f"{credential_id}: revoked credentials are immutable")
+        raise RotationAbort(
+            f"{credential_id}: revoked credentials are immutable", code="CREDENTIAL_REVOKED")
     if target not in {"active", "standby"}:
-        raise RotationAbort(f"{credential_id}: unsupported target state {target}")
+        raise RotationAbort(
+            f"{credential_id}: unsupported target state {target}", code="UNSUPPORTED_TARGET")
 
     if action == "promote":
         if credential.effective_state(now) == "active":
@@ -161,8 +172,7 @@ def _apply_item(
         if credential.effective_state(now) != "standby":
             raise RotationAbort(
                 f"{credential_id}: cannot promote from "
-                f"{credential.effective_state(now)}"
-            )
+                f"{credential.effective_state(now)}", code="BAD_SOURCE_STATE")
         updated = machine.transition(
             credential, "active", actor="rotator", reason=reason,
             at=now, conn=conn, batch_id=batch_id,
@@ -171,7 +181,8 @@ def _apply_item(
         return before
 
     if action != "rotate":
-        raise RotationAbort(f"{credential_id}: unsupported action {action}")
+        raise RotationAbort(
+            f"{credential_id}: unsupported action {action}", code="UNSUPPORTED_ACTION")
 
     working, _ = machine.expire_if_due(
         credential, now, conn=conn, batch_id=batch_id
@@ -181,29 +192,34 @@ def _apply_item(
         before["failure_reason"] = "rotation already in progress"
         return before
     if working.status == "revoked":
-        raise RotationAbort(f"{credential_id}: revoked credentials are immutable")
+        raise RotationAbort(
+            f"{credential_id}: revoked credentials are immutable", code="CREDENTIAL_REVOKED")
     if working.status not in {"active", "standby", "expired"}:
-        raise RotationAbort(f"{credential_id}: cannot rotate from {working.status}")
+        raise RotationAbort(
+            f"{credential_id}: cannot rotate from {working.status}", code="BAD_SOURCE_STATE")
 
     rotating = machine.transition(
         working, "rotating", actor="rotator", reason=reason,
         at=now, conn=conn, batch_id=batch_id,
     )
-    renewed = rotating.changed(
-        version=rotating.version + 1,
-        issued_at=now,
-        expires_at=now + timedelta(days=policy.rotation_period_days),
-    )
+    renewed, issues = rotation_identity(
+        rotating, list_credentials(conn), now, policy.rotation_period_days)
+    if issues:
+        raise RotationAbort(
+            "; ".join(issue.render() for issue in issues), code=issues[0].code)
     audit.record(
         actor="rotator",
         action="credential.renewed",
         subject=credential_id,
-        before={"version": rotating.version, "expires_at": format_time(rotating.expires_at)},
-        after={"version": renewed.version, "expires_at": format_time(renewed.expires_at)},
-        batch_id=batch_id,
-        reason=reason,
-        at=now,
-        conn=conn,
+        before={"version": rotating.version,
+                "synthetic_ref": rotating.synthetic_ref,
+                "fingerprint": rotating.fingerprint,
+                "expires_at": format_time(rotating.expires_at)},
+        after={"version": renewed.version,
+               "synthetic_ref": renewed.synthetic_ref,
+               "fingerprint": renewed.fingerprint,
+               "expires_at": format_time(renewed.expires_at)},
+        batch_id=batch_id, reason=reason, at=now, conn=conn,
     )
     final = machine.transition(
         renewed, target, actor="rotator", reason=reason,

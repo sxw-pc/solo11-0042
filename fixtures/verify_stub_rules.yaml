@@ -23,3 +23,9 @@ rules:
     outcome: invalid
   - fingerprint: "sha256:cda55ab41ec995b59a64983dc811cc8b37eee23c4de7a5223bfb0c1c4b339636"
     outcome: unknown
+  # Post-rotation identities: sha256 of SYNTH-DS-ALPHA-reader-03 / SYNTH-DS-BETA-reader-03,
+  # issued when the demo batch rotates CRED-ALPHA-READER-01 / CRED-BETA-READER-01.
+  - fingerprint: "sha256:aa6365af6dd6eb96b7429d319ae17b52eca000c621fa21b93d281129c9335345"
+    outcome: valid
+  - fingerprint: "sha256:5131562c660ab2ea6a9ef5d8247ad3ba2ce3c5ac92749ea16f040d130b307100"
+    outcome: valid

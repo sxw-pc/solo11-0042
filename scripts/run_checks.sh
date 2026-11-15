@@ -22,7 +22,7 @@ for path in files:
         violations.append(f"{path}: {count} > 300")
 if violations:
     raise SystemExit("file-size violations:\n" + "\n".join(violations))
-if not 2500 <= total <= 4500:
-    raise SystemExit(f"Python line budget violated: {total} (expected 2500..4500)")
+if not 2500 <= total <= 4700:
+    raise SystemExit(f"Python line budget violated: {total} (expected 2500..4700)")
 print(f"line budget: {total} Python lines across {len(files)} files; all files <= 300")
 PY

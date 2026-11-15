@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Any, Mapping
 from .clock import ClockError, parse_time
 from .config import ConfigError, Issue, Policy, load_policy, load_yaml
 from .model import Credential, ROLES, STATUSES, Task
+from .model import compute_fingerprint, synthetic_ref_for
 
 
 ID_PATTERN = re.compile(r"^CRED-[A-Z0-9][A-Z0-9-]*$")
@@ -29,10 +29,6 @@ class Registry:
     @property
     def valid(self) -> bool:
         return not self.issues
-
-
-def compute_fingerprint(synthetic_ref: str) -> str:
-    return "sha256:" + hashlib.sha256(synthetic_ref.encode("utf-8")).hexdigest()
 
 
 def load_registry(
@@ -145,7 +141,7 @@ def _parse_credential(
         issues.append(Issue("BAD_SEQ", f"{path}.seq", "must be an integer >= 1"))
         seq = 1
 
-    expected_ref = f"SYNTH-{source}-{role}-{seq:02d}"
+    expected_ref = synthetic_ref_for(source, role, seq)
     if synthetic_ref != expected_ref:
         issues.append(
             Issue(

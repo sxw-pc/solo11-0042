@@ -129,20 +129,31 @@ is included.
 
 ## 4. Rotation semantics
 
-A `rotate` item simulates a metadata renewal:
+A `rotate` item simulates a metadata renewal with a fresh synthetic identity:
 
 ```text
 reconcile expiry (clock actor) if needed
 current state --rotate--> rotating
 version += 1
+seq = smallest unoccupied SYNTH sequence for (source, role)
+synthetic_ref = SYNTH-<source>-<role>-<seq>
+fingerprint = sha256(synthetic_ref)
 issued_at = now
 expires_at = now + policy.rotation_period_days
 rotating --finalize--> planned target (active or standby)
 ```
 
-The synthetic reference and fingerprint are unchanged; only metadata is simulated. A
-`promote` item transitions `standby -> active` without a version bump. No new credential row
-is created.
+The new `seq` is the smallest positive integer not occupied by any existing credential
+with the same source and role, scanned inside the rotation transaction; revoked records
+keep their sequence numbers burned. Before anything is persisted, the renewed identity is
+validated against the registry rules (`rotation_identity` in `model.py`): the
+`synthetic_ref` must match `SYNTH-<source>-<role>-<seq>` and must not collide with any
+other credential's ref (`IDENTITY_CONFLICT`), the fingerprint must equal
+`sha256(synthetic_ref)` (`FINGERPRINT_MISMATCH`), and the validity window must be exactly
+`now` .. `now + rotation_period_days` (`VALIDITY_MISMATCH`). Any violation aborts the
+whole batch — no half-updated version is persisted — and the failure is recorded with a
+structured `[CODE]` reason. A `promote` item transitions `standby -> active` without a
+version bump or identity change. No new credential row is created.
 
 **Transaction boundary.** All items for a batch execute in one `BEGIN IMMEDIATE` SQLite
 transaction. Any exception rolls back every credential update and every rotation item. After

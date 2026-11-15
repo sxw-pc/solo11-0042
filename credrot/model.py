@@ -103,6 +103,32 @@ class Task:
 
 
 @dataclass(frozen=True)
+class Precondition:
+    """Execution precondition captured for a credential at planning time.
+
+    The snapshot is the consistency contract for a plan item: rotation only
+    proceeds when the credential's current identity fields still match it.
+    ``effective_state`` is the state computed at planning time; ``status`` is
+    the stored state and ``expires_at`` the validity deadline the snapshot was
+    based on, so a later natural expiry can be told apart from a write made by
+    another batch without re-running the planner.
+    """
+
+    version: int
+    status: str
+    effective_state: str
+    expires_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "status": self.status,
+            "effective_state": self.effective_state,
+            "expires_at": self.expires_at,
+        }
+
+
+@dataclass(frozen=True)
 class PlanItem:
     credential_id: str
     source: str
@@ -115,6 +141,7 @@ class PlanItem:
     days_to_expiry: int
     affected_tasks: tuple[str, ...]
     task_priority: int
+    precondition: Precondition
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -129,6 +156,7 @@ class PlanItem:
             "days_to_expiry": self.days_to_expiry,
             "affected_tasks": list(self.affected_tasks),
             "task_priority": self.task_priority,
+            "precondition": self.precondition.to_dict(),
         }
 
 

@@ -23,10 +23,29 @@ or more required roles, `min_active`, `backup_margin`, and an ordered fallback l
 credential IDs. Binding order is the declared preference.
 
 A **RotationPlan** has a deterministic `batch_id`, injected `generated_at`, ordered items,
-and a summary. Each item carries a credential, action (`rotate` or `promote`), effective
-`from_state`, `target_state`, reason code, human reason, days-to-expiry, affected tasks, and
-minimum affected task priority. The stored plan is the authorization for `POST /api/rotate`;
-the API never accepts arbitrary state changes.
+and summary. Each item carries a credential, action (`rotate` or `promote`), effective
+`from_state`, `target_state`, reason code, human reason, days-to-expiry, affected tasks,
+minimum affected task priority, and a `precondition` snapshot. The stored plan is the
+authorization for `POST /api/rotate`; the API never accepts arbitrary state changes.
+
+### Snapshot contract
+
+The `precondition` block freezes the credential's execution-time identity at planning
+time: its `version`, stored `status`, computed `effective_state`, and `expires_at`.
+It is the consistency contract for the item. Inside the rotation transaction every item
+is compared against the current ledger row before any write. When the snapshot no longer
+holds, the whole batch rolls back and a structured reason code is persisted:
+
+| Code | Decided from the snapshot when |
+| --- | --- |
+| `SUPERSEDED_BY_BATCH` | `version`, stored `status`, or `expires_at` differs — another batch wrote the credential — or the effective state drifted in a way the deadline cannot explain. |
+| `SNAPSHOT_STALE` | `version`/`status`/`expires_at` are unchanged and the only drift is that the clock has crossed the snapshot's own `expires_at` (natural expiry after planning). |
+
+Classification reads the stored snapshot and the current row only; it never re-runs the
+planner to infer what changed. Plans persisted before snapshots existed have no
+`precondition` and skip the check, so old batches remain executable. A rolled-back batch
+never changes credential versions or states, and re-running the same batch is idempotent:
+a failed batch records the same single failure row and code on every attempt.
 
 Errors are accumulated during fixture loading as `Issue(code, path, message)` values. A
 missing task binding, bad fingerprint, unknown role, or malformed policy does not abort the
@@ -123,9 +142,11 @@ both to surface unresolved redundancy and to preserve a visible deficit; `min_ac
 upgrade an expiring standby's target from standby to active.
 
 `batch_id = BATCH-<YYYYMMDDTHHMMSSZ>-<first 10 hex chars of sha256(payload)>`, where
-`payload` contains the normalized timestamp and item
-`(credential_id, action, target_state, reason_code)` tuples. No random or process-local data
-is included.
+`payload` contains the normalized timestamp and per-item
+`(credential_id, action, target_state, reason_code, precondition)` tuples. The
+precondition snapshot is part of the identity, so two plans built at the same instant
+against different credential versions get distinct batch IDs. No random or process-local
+data is included.
 
 ## 4. Rotation semantics
 
@@ -145,14 +166,18 @@ The synthetic reference and fingerprint are unchanged; only metadata is simulate
 is created.
 
 **Transaction boundary.** All items for a batch execute in one `BEGIN IMMEDIATE` SQLite
-transaction. Any exception rolls back every credential update and every rotation item. After
-rollback, the executor writes:
+transaction. Each item's `precondition` snapshot is checked against the current credential
+row before it is applied; a mismatch raises `SnapshotConflict` (see the snapshot contract
+in section 1). Any exception rolls back every credential update and every rotation item.
+After rollback, the executor writes:
 
-- batch status `failed`, execution timestamp, and `failure_reason`;
-- a failed rotation item with `ok = 0`;
-- a `rotation.failed` audit event.
+- batch status `failed`, execution timestamp, `failure_reason`, and structured
+  `failure_code` (for example `SUPERSEDED_BY_BATCH` or `SNAPSHOT_STALE`);
+- a failed rotation item with `ok = 0` carrying the same `failure_code`;
+- a `rotation.failed` audit event whose `after` payload includes the code.
 
-The failed batch can be retried after the cause is corrected. On success, status becomes
+The failed batch can be retried after the cause is corrected; retries before that fail
+again with the same code and never mutate the credential table. On success, status becomes
 `completed`, all items have `result=executed`, `ok=1`, and a `rotation.completed` audit is
 written in the same transaction.
 
@@ -220,10 +245,12 @@ its in-transaction events. Failure evidence is explicitly re-written after rollb
 failures, and resolver results using the injected clock. It emits:
 
 - credential overview with stored and effective state;
-- rotation batch summary and item outcomes;
+- rotation batch summary and item outcomes, including each failed item's `failure_code`
+  and the batch-level code;
 - health matrix and conclusion;
 - per-task resolvability;
-- deduplicated failure details from tasks, batches, and failure audit events.
+- deduplicated failure details from tasks, batches, and failure audit events, each with a
+  structured `code` when one exists.
 
 JSON is rendered with `sort_keys=True` and sorted arrays. Markdown is generated solely from
 the JSON payload. No latency, auto-increment row ID, or wall-clock value appears. With a

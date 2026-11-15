@@ -22,7 +22,7 @@ def test_schema_user_version_and_wal(tmp_path: Path, registry, clock):
         }
     finally:
         conn.close()
-    assert version == 1
+    assert version == 2
     assert journal.lower() == "wal"
     assert {"credentials", "tasks", "audit_events", "rotation_batches"} <= tables
 

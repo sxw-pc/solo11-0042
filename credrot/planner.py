@@ -10,10 +10,20 @@ from typing import Iterable, Mapping
 
 from .clock import format_time, parse_time
 from .config import Policy
-from .model import Credential, PlanItem, RotationPlan, Task
+from .model import Credential, PlanItem, Precondition, RotationPlan, Task
 
 
 URGENCY = {"EXPIRED": 0, "CRITICAL_EXPIRY": 1, "EXPIRING_SOON": 2, "REDUNDANCY_LOW": 3}
+
+
+def snapshot_precondition(credential: Credential, now: datetime) -> Precondition:
+    """Capture the credential identity a plan item assumes at execution."""
+    return Precondition(
+        version=credential.version,
+        status=credential.status,
+        effective_state=credential.effective_state(now),
+        expires_at=format_time(credential.expires_at),
+    )
 
 
 def build_plan(
@@ -61,6 +71,7 @@ def build_plan(
             days_to_expiry=credential.days_left(now),
             affected_tasks=tuple(task.id for task in affected),
             task_priority=min((task.priority for task in affected), default=999),
+            precondition=snapshot_precondition(credential, now),
         )
         entries[credential.id] = item
         urgency[credential.id] = URGENCY[reason_code]
@@ -95,6 +106,7 @@ def build_plan(
                         task_priority=min(
                             (item.priority for item in affected), default=task.priority
                         ),
+                        precondition=snapshot_precondition(credential, now),
                     )
                     urgency[credential.id] = URGENCY["REDUNDANCY_LOW"]
                 final_state[credential.id] = "active"
@@ -208,7 +220,18 @@ def _summary(
 
 def _batch_id(now: datetime, items: tuple[PlanItem, ...]) -> str:
     payload = format_time(now) + "|" + "|".join(
-        f"{item.credential_id}:{item.action}:{item.target_state}:{item.reason_code}"
+        "|".join(
+            (
+                item.credential_id,
+                item.action,
+                item.target_state,
+                item.reason_code,
+                str(item.precondition.version),
+                item.precondition.status,
+                item.precondition.effective_state,
+                item.precondition.expires_at,
+            )
+        )
         for item in items
     )
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:10]

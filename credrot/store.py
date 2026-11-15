@@ -158,6 +158,7 @@ def get_batch(db: Database, batch_id: str) -> dict[str, Any] | None:
         "plan": json.loads(row["plan_json"]),
         "summary": json.loads(row["summary_json"]),
         "failure_reason": row["failure_reason"],
+        "failure_code": row["failure_code"],
     }
 
 
@@ -166,7 +167,7 @@ def list_batches(db: Database, limit: int = 20) -> list[dict[str, Any]]:
     try:
         rows = conn.execute(
             """SELECT batch_id, generated_at, executed_at, status, summary_json,
-                      failure_reason
+                      failure_reason, failure_code
                FROM rotation_batches
                ORDER BY generated_at DESC, batch_id DESC LIMIT ?""",
             (max(1, int(limit)),),
@@ -179,6 +180,7 @@ def list_batches(db: Database, limit: int = 20) -> list[dict[str, Any]]:
             "executed_at": row["executed_at"], "status": row["status"],
             "summary": json.loads(row["summary_json"]),
             "failure_reason": row["failure_reason"],
+            "failure_code": row["failure_code"],
         }
         for row in rows
     ]
@@ -187,18 +189,19 @@ def list_batches(db: Database, limit: int = 20) -> list[dict[str, Any]]:
 def insert_rotation_item(
     conn: sqlite3.Connection, batch_id: str, item: dict[str, Any],
     result: str, failure_reason: str | None, at: datetime,
+    failure_code: str | None = None,
 ) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO rotation_items
         (batch_id, credential_id, action, from_state, to_state, reason_code,
-         result, ok, failure_reason, at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+         result, ok, failure_reason, failure_code, at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             batch_id, item["credential_id"], item.get("action", "rotate"),
             item.get("from_state", "unknown"), item.get("target_state", "unknown"),
             item.get("reason_code", "UNKNOWN"), result,
             1 if result in {"executed", "skipped"} else 0,
-            failure_reason, format_time(at),
+            failure_reason, failure_code, format_time(at),
         ),
     )
 
@@ -218,9 +221,14 @@ def list_rotation_items(db: Database, batch_id: str) -> list[dict[str, Any]]:
 def set_batch_result(
     db: Database, batch_id: str, status: str, at: datetime,
     summary: dict[str, Any] | None = None, failure_reason: str | None = None,
+    failure_code: str | None = None,
 ) -> None:
-    fields = ["status = ?", "executed_at = ?", "failure_reason = ?"]
-    values: list[Any] = [status, format_time(at), failure_reason]
+    fields = [
+        "status = ?", "executed_at = ?", "failure_reason = ?", "failure_code = ?",
+    ]
+    values: list[Any] = [
+        status, format_time(at), failure_reason, failure_code,
+    ]
     if summary is not None:
         fields.append("summary_json = ?")
         values.append(canonical_json(summary))

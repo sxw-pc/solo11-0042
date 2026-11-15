@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS rotation_batches (
     status TEXT NOT NULL,
     plan_json TEXT NOT NULL,
     summary_json TEXT NOT NULL,
-    failure_reason TEXT
+    failure_reason TEXT,
+    failure_code TEXT
 );
 CREATE TABLE IF NOT EXISTS rotation_items (
     batch_id TEXT NOT NULL REFERENCES rotation_batches(batch_id) ON DELETE CASCADE,
@@ -55,6 +56,7 @@ CREATE TABLE IF NOT EXISTS rotation_items (
     result TEXT NOT NULL,
     ok INTEGER NOT NULL,
     failure_reason TEXT,
+    failure_code TEXT,
     at TEXT NOT NULL,
     PRIMARY KEY (batch_id, credential_id)
 );
@@ -114,7 +116,19 @@ class Database:
                 conn.execute(
                     "ALTER TABLE rotation_items ADD COLUMN ok INTEGER NOT NULL DEFAULT 1"
                 )
-            conn.execute("PRAGMA user_version = 1")
+            if "failure_code" not in columns:
+                conn.execute(
+                    "ALTER TABLE rotation_items ADD COLUMN failure_code TEXT"
+                )
+            batch_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(rotation_batches)")
+            }
+            if "failure_code" not in batch_columns:
+                conn.execute(
+                    "ALTER TABLE rotation_batches ADD COLUMN failure_code TEXT"
+                )
+            conn.execute("PRAGMA user_version = 2")
         finally:
             conn.close()
 

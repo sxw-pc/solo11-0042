@@ -37,19 +37,23 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"- Executed: `{batch['executed_at'] or 'not executed'}`"
         )
         if batch.get("failure_reason"):
-            lines.append(f"- Failure: {batch['failure_reason']}")
+            failure_code = batch.get("failure_code") or "UNCLASSIFIED"
+            lines.append(
+                f"- Failure: {failure_code} — {batch['failure_reason']}"
+            )
         lines.extend(
             [
                 "",
-                "| credential | action | from | to | reason | result |",
-                "| --- | --- | --- | --- | --- | --- |",
+                "| credential | action | from | to | reason | result | code |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for item in batch["items"]:
             lines.append(
                 f"| {item['credential_id']} | {item['action']} | "
                 f"{item['from_state']} | {item['to_state']} | "
-                f"{item['reason_code']} | {item['result']} |"
+                f"{item['reason_code']} | {item['result']} | "
+                f"{item.get('failure_code') or '-'} |"
             )
 
     lines.extend(["", "## Health matrix", "",
@@ -80,9 +84,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append("No failures recorded.")
     else:
         for failure in report["failures"]:
+            code = f"[{failure['code']}] " if failure.get("code") else ""
             lines.append(
                 f"- `{failure['kind']}` {failure['subject']}: "
-                f"{failure['message']}"
+                f"{code}{failure['message']}"
             )
     return "\n".join(lines) + "\n"
 

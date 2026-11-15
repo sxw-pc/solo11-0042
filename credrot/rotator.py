@@ -10,6 +10,8 @@ from .audit import AuditLog
 from .clock import Clock, format_time
 from .config import Policy
 from .db import Database
+from .model import Credential
+from .snapshot import SnapshotConflict, ensure_precondition
 from .state_machine import StateMachine
 from .store import (
     canonical_json,
@@ -39,6 +41,7 @@ class RotationResult:
     failed: int
     summary: dict[str, Any]
     error: str | None = None
+    failure_code: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +53,7 @@ class RotationResult:
             "failed": self.failed,
             "summary": self.summary,
             "error": self.error,
+            "failure_code": self.failure_code,
         }
 
 
@@ -95,7 +99,7 @@ def rotate_batch(
             conn.execute(
                 """UPDATE rotation_batches
                    SET status = 'completed', executed_at = ?, failure_reason = NULL,
-                       summary_json = ?
+                       failure_code = NULL, summary_json = ?
                    WHERE batch_id = ?""",
                 (format_time(now), canonical_json(summary), batch_id),
             )
@@ -115,18 +119,21 @@ def rotate_batch(
         )
     except Exception as exc:
         reason = str(exc) or exc.__class__.__name__
+        failure_code = getattr(exc, "code", None)
         failed_row = (
             _result(failed_item, "failed") if failed_item is not None else None
         )
         if failed_row is not None:
             failed_row["failure_reason"] = reason
+            failed_row["failure_code"] = failure_code
         _record_failure(
-            db, audit, batch, batch_id, failed_item, reason, now
+            db, audit, batch, batch_id, failed_item, reason, now, failure_code
         )
         return RotationResult(
             batch_id, "failed", [failed_row] if failed_row else [], 0, 0, 1,
             {"executed": 0, "skipped": 0, "failed": 1, "total": len(plan_items)},
             reason,
+            failure_code,
         )
 
 
@@ -150,6 +157,7 @@ def _apply_item(
         raise RotationAbort(f"{credential_id}: credential no longer exists")
     if credential.status == "revoked":
         raise RotationAbort(f"{credential_id}: revoked credentials are immutable")
+    ensure_precondition(item, credential, now)
     if target not in {"active", "standby"}:
         raise RotationAbort(f"{credential_id}: unsupported target state {target}")
 
@@ -223,6 +231,7 @@ def _result(item: dict[str, Any], result: str) -> dict[str, Any]:
         "result": result,
         "ok": result in {"executed", "skipped"},
         "failure_reason": None,
+        "failure_code": None,
     }
 
 
@@ -243,11 +252,12 @@ def _already_completed(
 def _record_failure(
     db: Database, audit: AuditLog, batch: dict[str, Any], batch_id: str,
     failed_item: dict[str, Any] | None, reason: str, now: datetime,
+    failure_code: str | None = None,
 ) -> None:
     """Persist failure metadata after the credential transaction rolled back."""
     set_batch_result(
         db, batch_id, "failed", now, summary=dict(batch["summary"]),
-        failure_reason=reason,
+        failure_reason=reason, failure_code=failure_code,
     )
     failed_credential = (
         failed_item.get("credential_id") if failed_item is not None else None
@@ -259,13 +269,14 @@ def _record_failure(
             conn.execute(
                 """INSERT OR REPLACE INTO rotation_items
                 (batch_id, credential_id, action, from_state, to_state,
-                 reason_code, result, ok, failure_reason, at)
-                VALUES (?, ?, ?, ?, ?, ?, 'failed', 0, ?, ?)""",
+                 reason_code, result, ok, failure_reason, failure_code, at)
+                VALUES (?, ?, ?, ?, ?, ?, 'failed', 0, ?, ?, ?)""",
                 (
                     batch_id, failed_credential, item.get("action", "rotate"),
                     item.get("from_state", "unknown"),
                     item.get("target_state", "unknown"),
-                    item.get("reason_code", "UNKNOWN"), reason, format_time(now),
+                    item.get("reason_code", "UNKNOWN"), reason, failure_code,
+                    format_time(now),
                 ),
             )
             conn.commit()
@@ -276,7 +287,7 @@ def _record_failure(
         action="rotation.failed",
         subject=batch_id,
         before={"status": batch["status"]},
-        after={"status": "failed"},
+        after={"status": "failed", "failure_code": failure_code},
         batch_id=batch_id,
         reason=reason,
         at=now,

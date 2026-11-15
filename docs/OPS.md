@@ -76,6 +76,9 @@ Check these fields before execution:
   fixtures or in a later iteration.
 - `summary.truncated`: nonzero means `max_items_per_plan` cut lower-urgency items. Raise the
   cap deliberately or generate another plan after the first batch.
+- `precondition`: the per-item snapshot (`version`, `status`, `effective_state`,
+  `expires_at`) captured at planning time. Execution rejects the batch if the live row no
+  longer matches it; do not hand-edit this block.
 
 For a dry export, use `plan --format markdown` or read `/api/plan?now=...`.
 
@@ -90,9 +93,18 @@ python -m credrot rotate --batch <batch-id>   # safe: all skipped
 - A completed batch is immutable through this CLI: repeated calls return `skipped` and do
   not touch credential rows.
 - If any item fails, the whole credential transaction rolls back. The batch becomes `failed`,
-  the first failure reason is retained, and one failed rotation item is recorded. Fix the
-  cause (for example, a revoked credential), then invoke rotate again. A retry re-executes
-  from the plan and is allowed only because the previous attempt rolled back.
+  the first failure reason is retained, and one failed rotation item is recorded. The
+  structured `failure_code` distinguishes the two snapshot-contract failures:
+  - `SUPERSEDED_BY_BATCH`: another batch changed the credential's version, stored state, or
+    validity deadline after this plan was generated. Generate a fresh plan instead of
+    forcing the stale one.
+  - `SNAPSHOT_STALE`: no other batch wrote the row; the credential simply passed its
+    snapshot `expires_at` before execution. Re-plan at the current clock so the renewal is
+    planned against the expired effective state.
+  Other failures (for example, a revoked credential) keep their text reason with a null
+  code. Fix the cause, then invoke rotate again; a failed batch is safe to re-run because
+  every attempt rolls back and leaves credential versions and states untouched, recording
+  the same single failure row until the cause is resolved.
 
 ## 5. Backup and rollback
 

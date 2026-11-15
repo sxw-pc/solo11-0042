@@ -129,6 +129,7 @@ def _batch_detail(
                 "reason_code": row["reason_code"],
                 "result": row["result"],
                 "failure_reason": row["failure_reason"],
+                "failure_code": row["failure_code"],
                 "at": row["at"],
             }
             for row in stored_items
@@ -143,6 +144,7 @@ def _batch_detail(
                 "reason_code": item["reason_code"],
                 "result": "planned",
                 "failure_reason": None,
+                "failure_code": None,
                 "at": None,
             }
             for item in batch["plan"].get("items", [])
@@ -153,6 +155,7 @@ def _batch_detail(
         "generated_at": batch["generated_at"],
         "executed_at": batch["executed_at"],
         "failure_reason": batch["failure_reason"],
+        "failure_code": batch.get("failure_code"),
         "summary": batch["summary"],
         "items": items,
     }
@@ -178,6 +181,7 @@ def _failures(
                 "kind": "rotation",
                 "subject": batch["batch_id"],
                 "message": batch["failure_reason"],
+                "code": batch.get("failure_code"),
             }
         )
     for task in tasks:
@@ -187,6 +191,7 @@ def _failures(
                     "kind": "resolution",
                     "subject": task["task_id"],
                     "message": f"{task['code']}: {task['message']}",
+                    "code": task["code"],
                 }
             )
     for event in _failure_events(db):
@@ -195,10 +200,12 @@ def _failures(
                 "kind": event["action"],
                 "subject": event["subject"],
                 "message": event["reason"],
+                "code": (event.get("after") or {}).get("failure_code"),
             }
         )
     deduped = {
-        (item["kind"], item["subject"], item["message"]): item for item in failures
+        (item["kind"], item["subject"], item["message"], item["code"]): item
+        for item in failures
     }
     return [deduped[key] for key in sorted(deduped)]
 
@@ -218,6 +225,7 @@ def _failure_events(db: Database) -> list[dict[str, Any]]:
             "at": row["at"], "actor": row["actor"], "action": row["action"],
             "subject": row["subject"], "batch_id": row["batch_id"],
             "reason": row["reason"],
+            "after": json.loads(row["after_json"] or "{}"),
         }
         for row in rows
         if row["action"] in FAILURE_ACTIONS

@@ -13,6 +13,11 @@ STATUSES = ("active", "standby", "rotating", "expired", "revoked")
 ROLES = ("reader", "writer", "admin")
 USABLE_STATES = ("active", "standby")
 
+# Plan item origins: "scheduled" for ordinary urgency-ordered items,
+# "compensated" for a promote pulled in to reclaim a capped-out rotate slot.
+ITEM_ORIGIN_SCHEDULED = "scheduled"
+ITEM_ORIGIN_COMPENSATED = "compensated"
+
 
 class DomainError(Exception):
     """Base class for expected credential-domain failures."""
@@ -115,6 +120,8 @@ class PlanItem:
     days_to_expiry: int
     affected_tasks: tuple[str, ...]
     task_priority: int
+    origin: str = ITEM_ORIGIN_SCHEDULED
+    slot_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -129,6 +136,8 @@ class PlanItem:
             "days_to_expiry": self.days_to_expiry,
             "affected_tasks": list(self.affected_tasks),
             "task_priority": self.task_priority,
+            "origin": self.origin,
+            "slot_source": self.slot_source,
         }
 
 

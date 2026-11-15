@@ -143,8 +143,16 @@ Symptoms: `verify` results have `STUB_UNREACHABLE` or `TIMEOUT`; resolution fail
 Inspect `/api/credentials` and the resolver's `attempts` array:
 
 - `UNVERIFIED`: no fresh observation exists. Run `verify`.
-- `STALE_VERIFICATION`: the latest observation is older than
-  `resolver.max_verification_age_minutes`. Re-run `verify` with the current clock.
+- `STALE_VERIFICATION`: the latest observation is older than the role's limit.
+  Roles listed in `resolver.role_max_age_minutes` use their own limit; all
+  others use `resolver.max_verification_age_minutes`. Re-run `verify` with the
+  current clock.
+- `STALE_SOFTENED`: no fresh candidate existed, every state-usable candidate
+  was rejected only for verification age, and a stale candidate whose latest
+  outcome was `valid` was selected in degraded mode. Only roles in
+  `resolver.soften_stale_for_roles` can soften; `invalid`/`unknown` outcomes
+  never soften, and any fresh usable candidate always wins over a softened
+  one. Every attempt row carries `verification_age_minutes` for audit.
 - `STATE_EXPIRED` / `STATE_REVOKED` / `STATE_ROTATING`: the candidate is not usable. Review
   the plan, complete the rotation, or update fixture metadata.
 - `VERIFICATION_INVALID`, `VERIFICATION_UNKNOWN`, `VERIFICATION_ERROR`: inspect the stub rule

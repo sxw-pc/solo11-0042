@@ -67,7 +67,7 @@ def render_markdown(report: dict[str, Any]) -> str:
                   "| --- | --- | --- | --- | --- |"])
     for task in report["tasks"]:
         roles = ", ".join(
-            f"{role}={value['credential_id'] if value else '-'}"
+            f"{role}={_render_resolved(value)}"
             for role, value in task["resolved"].items()
         )
         lines.append(
@@ -85,5 +85,14 @@ def render_markdown(report: dict[str, Any]) -> str:
                 f"{failure['message']}"
             )
     return "\n".join(lines) + "\n"
+
+
+def _render_resolved(value: Any) -> str:
+    if not value:
+        return "-"
+    label = value["credential_id"]
+    if value.get("softened"):
+        label += " (softened)"
+    return label
 
 

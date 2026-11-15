@@ -59,11 +59,12 @@ def resolve(
             failure_message = f"no bound credential supplies role {role}"
             attempts.append(
                 {"role": role, "candidate_id": None, "usable": False,
-                 "reason": "NO_MATCHING_ROLE"}
+                 "reason": "NO_MATCHING_ROLE", "verification_age_minutes": None}
             )
             continue
 
         viable: list[tuple[tuple[int, int, int, str], Credential, dict[str, Any]]] = []
+        role_evals: list[tuple[Credential, dict[str, Any]]] = []
         for credential in sorted(candidates, key=lambda item: item.id):
             rank = task.bindings.index(credential.id)
             attempt, usable = _evaluate(
@@ -71,14 +72,15 @@ def resolve(
             )
             attempt["role"] = role
             attempts.append(attempt)
+            role_evals.append((credential, attempt))
             if usable:
-                key = (
-                    0 if attempt["state"] == "active" else 1,
-                    rank,
-                    -credential.version,
-                    credential.id,
-                )
-                viable.append((key, credential, attempt))
+                viable.append((_sort_key(credential, attempt), credential, attempt))
+
+        if not viable:
+            softened = _soften_stale(role, role_evals, policy)
+            if softened is not None:
+                credential, attempt = softened
+                viable.append((_sort_key(credential, attempt), credential, attempt))
 
         if not viable:
             if failure_code == "OK":
@@ -96,7 +98,10 @@ def resolve(
             "verification": attempt["verification"],
             "binding_rank": task.bindings.index(chosen.id),
         }
-        if attempt["state"] != "active" or attempt.get("unverified"):
+        if attempt.get("softened"):
+            selected[role]["softened"] = True
+        if (attempt["state"] != "active" or attempt.get("unverified")
+                or attempt.get("softened")):
             degraded = True
 
     ok = len(selected) == len(task.required_roles) and failure_code == "OK"
@@ -131,6 +136,7 @@ def _evaluate(
         "binding_rank": rank,
         "state": state,
         "verification": None,
+        "verification_age_minutes": None,
         "usable": False,
         "reason": "",
     }
@@ -153,7 +159,11 @@ def _evaluate(
     }
     attempt["verification"] = summary
     age_seconds = (now - parse_time(verification["checked_at"])).total_seconds()
-    if age_seconds > policy.max_verification_age_minutes * 60:
+    attempt["verification_age_minutes"] = round(age_seconds / 60, 3)
+    max_age = policy.role_max_age_minutes.get(
+        credential.role, policy.max_verification_age_minutes
+    )
+    if age_seconds > max_age * 60:
         attempt["reason"] = "STALE_VERIFICATION"
         return attempt, False
     if verification["outcome"] != "valid":
@@ -164,6 +174,51 @@ def _evaluate(
         "ACCEPTED_ACTIVE" if state == "active" else "ACCEPTED_STANDBY"
     )
     return attempt, True
+
+
+def _sort_key(
+    credential: Credential, attempt: dict[str, Any]
+) -> tuple[int, int, int, str]:
+    return (
+        0 if attempt["state"] == "active" else 1,
+        attempt["binding_rank"],
+        -credential.version,
+        credential.id,
+    )
+
+
+def _soften_stale(
+    role: str,
+    role_evals: list[tuple[Credential, dict[str, Any]]],
+    policy: Policy,
+) -> tuple[Credential, dict[str, Any]] | None:
+    """Pick a stale-but-valid candidate when a listed role has nothing fresh.
+
+    Allowed only when every state-usable candidate was rejected solely for
+    verification age; the pick's latest outcome must be ``valid``. Runs only
+    after the normal pass found nothing, so fresh candidates always win.
+    """
+    if role not in policy.soften_stale_for_roles:
+        return None
+    evaluated = [
+        (credential, attempt)
+        for credential, attempt in role_evals
+        if attempt["state"] in {"active", "standby"}
+    ]
+    if not evaluated or any(
+        attempt["reason"] != "STALE_VERIFICATION" for _, attempt in evaluated
+    ):
+        return None
+    softenable = [
+        (credential, attempt)
+        for credential, attempt in evaluated
+        if (attempt["verification"] or {}).get("outcome") == "valid"
+    ]
+    if not softenable:
+        return None
+    credential, attempt = min(softenable, key=lambda pair: _sort_key(*pair))
+    attempt.update({"usable": True, "softened": True, "reason": "STALE_SOFTENED"})
+    return credential, attempt
 
 
 def _failure(task_id: str, now: datetime, code: str, message: str) -> dict[str, Any]:

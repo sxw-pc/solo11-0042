@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -59,6 +59,8 @@ class Policy:
     max_verification_age_minutes: int = 1440
     allow_unverified: bool = False
     default_backup_margin: int = 1
+    role_max_age_minutes: Mapping[str, int] = field(default_factory=dict)
+    soften_stale_for_roles: tuple[str, ...] = ()
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> tuple["Policy", list[Issue]]:
@@ -96,6 +98,12 @@ class Policy:
         )
         allow_unverified = _as_bool(
             resolver, "allow_unverified", False, "policy.resolver", issues
+        )
+        role_max_age = _as_int_map(
+            resolver, "role_max_age_minutes", "policy.resolver", issues
+        )
+        soften_roles = _as_str_list(
+            resolver, "soften_stale_for_roles", "policy.resolver", issues
         )
         backup_margin = _as_int(
             tasks, "default_backup_margin", 1, "policy.tasks", issues
@@ -152,6 +160,8 @@ class Policy:
             max_verification_age_minutes=max_age,
             allow_unverified=allow_unverified,
             default_backup_margin=backup_margin,
+            role_max_age_minutes=role_max_age,
+            soften_stale_for_roles=tuple(soften_roles),
         )
         return policy, issues
 
@@ -204,3 +214,39 @@ def _as_bool(
         issues.append(Issue("POLICY_TYPE", f"{path}.{key}", "must be a boolean"))
         return default
     return value
+
+
+def _as_int_map(
+    data: Mapping[str, Any], key: str, path: str, issues: list[Issue]
+) -> dict[str, int]:
+    value = data.get(key, {})
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        issues.append(Issue("POLICY_TYPE", f"{path}.{key}", "must be a mapping"))
+        return {}
+    result: dict[str, int] = {}
+    for role, minutes in value.items():
+        if not isinstance(role, str) or isinstance(minutes, bool) or not isinstance(minutes, int):
+            issues.append(
+                Issue("POLICY_TYPE", f"{path}.{key}.{role}", "must map role to integer")
+            )
+        elif minutes <= 0:
+            issues.append(Issue("POLICY_RANGE", f"{path}.{key}.{role}", "must be > 0"))
+        else:
+            result[role] = minutes
+    return result
+
+
+def _as_str_list(
+    data: Mapping[str, Any], key: str, path: str, issues: list[Issue]
+) -> list[str]:
+    value = data.get(key, [])
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        issues.append(
+            Issue("POLICY_TYPE", f"{path}.{key}", "must be a list of role names")
+        )
+        return []
+    return list(dict.fromkeys(value))

@@ -52,6 +52,42 @@ def test_missing_policy_is_reported_not_raised(tmp_path: Path):
     assert issues and issues[0].code == "POLICY_IO"
 
 
+def test_policy_parses_role_overrides_and_softening():
+    policy, issues = Policy.from_mapping(
+        {
+            "resolver": {
+                "max_verification_age_minutes": 120,
+                "role_max_age_minutes": {"admin": 30, "reader": 720},
+                "soften_stale_for_roles": ["admin", "admin"],
+            },
+        }
+    )
+    assert not issues
+    assert policy.max_verification_age_minutes == 120
+    assert policy.role_max_age_minutes == {"admin": 30, "reader": 720}
+    assert policy.soften_stale_for_roles == ("admin",)
+    default, issues = Policy.from_mapping({})
+    assert not issues
+    assert default.role_max_age_minutes == {}
+    assert default.soften_stale_for_roles == ()
+
+
+def test_policy_rejects_bad_role_override_and_softening_shapes():
+    policy, issues = Policy.from_mapping(
+        {
+            "resolver": {
+                "role_max_age_minutes": {"admin": 0, "reader": "soon"},
+                "soften_stale_for_roles": "admin",
+            },
+        }
+    )
+    codes = [issue.code for issue in issues]
+    assert "POLICY_RANGE" in codes
+    assert codes.count("POLICY_TYPE") == 2
+    assert policy.role_max_age_minutes == {}
+    assert policy.soften_stale_for_roles == ()
+
+
 def test_invalid_yaml_raises_config_error(tmp_path: Path):
     path = tmp_path / "broken.yaml"
     path.write_text("rotation: [unclosed", encoding="utf-8")

@@ -6,7 +6,7 @@ import hashlib
 from collections import Counter
 from dataclasses import replace
 from datetime import datetime
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from .clock import format_time, parse_time
 from .config import Policy
@@ -66,16 +66,29 @@ def build_plan(
         urgency[credential.id] = URGENCY[reason_code]
         final_state[credential.id] = target
 
+    # Joint coverage relation: credential -> every task whose standby pool it
+    # currently feeds. Promoting a shared credential spends the backup budget
+    # of *all* of these tasks at once, so promotions are vetted jointly below.
+    coverage = _coverage_index(creds, ordered_tasks)
+
     active_deficits: list[str] = []
+    degraded: list[dict[str, Any]] = []
     for task in ordered_tasks:
         for role in task.required_roles:
             active_count = _count_final(task, role, "active", creds, final_state)
             if active_count >= task.min_active:
                 continue
             candidates = _promotion_candidates(task, role, creds, final_state)
+            blocked: list[tuple[Credential, list[dict[str, Any]]]] = []
             for credential in candidates:
                 if active_count >= task.min_active:
                     break
+                vetoes = _margin_vetoes(
+                    credential, task, coverage, creds, final_state
+                )
+                if vetoes:
+                    blocked.append((credential, vetoes))
+                    continue
                 current = entries.get(credential.id)
                 if current is not None and current.target_state == "standby":
                     entries[credential.id] = replace(current, target_state="active")
@@ -101,17 +114,13 @@ def build_plan(
                 active_count += 1
             if active_count < task.min_active:
                 active_deficits.append(f"{task.id}:{role}")
+                degraded.append(
+                    _degradation(task, role, active_count, candidates, blocked)
+                )
 
     backup_deficits: dict[str, int] = {}
     for task in ordered_tasks:
-        standby = sum(
-            1
-            for credential_id in task.bindings
-            if credential_id in creds
-            and creds[credential_id].role in task.required_roles
-            and final_state.get(credential_id) == "standby"
-        )
-        deficit = max(0, task.backup_margin - standby)
+        deficit = max(0, task.backup_margin - _standby_count(task, creds, final_state))
         if deficit:
             backup_deficits[task.id] = deficit
 
@@ -124,7 +133,7 @@ def build_plan(
         ordered_items = ordered_items[: policy.max_items_per_plan]
     items = tuple(ordered_items)
     summary = _summary(items, creds, ordered_tasks, backup_deficits,
-                       active_deficits, truncated)
+                       active_deficits, degraded, truncated)
     batch_id = _batch_id(now, items)
     return RotationPlan(batch_id=batch_id, generated_at=now, items=items, summary=summary)
 
@@ -182,12 +191,120 @@ def _promotion_candidates(
     return sorted(candidates, key=lambda cred: cred.id)
 
 
+def _coverage_index(
+    credentials: Mapping[str, Credential], tasks: list[Task]
+) -> dict[str, list[Task]]:
+    """Map each credential to the tasks whose standby pool it feeds.
+
+    Mirrors the standby counting used for ``backup_deficits`` so a veto and
+    the reported deficit always agree. Tasks are stored in planning order.
+    """
+    coverage: dict[str, list[Task]] = {}
+    for task in tasks:
+        for credential_id in task.bindings:
+            credential = credentials.get(credential_id)
+            if credential is None or credential.role not in task.required_roles:
+                continue
+            coverage.setdefault(credential_id, []).append(task)
+    return coverage
+
+
+def _standby_count(
+    task: Task,
+    credentials: Mapping[str, Credential],
+    final_state: Mapping[str, str],
+) -> int:
+    return sum(
+        1
+        for credential_id in task.bindings
+        if credential_id in credentials
+        and credentials[credential_id].role in task.required_roles
+        and final_state.get(credential_id) == "standby"
+    )
+
+
+def _margin_vetoes(
+    credential: Credential,
+    backfilled: Task,
+    coverage: Mapping[str, list[Task]],
+    credentials: Mapping[str, Credential],
+    final_state: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Peer tasks whose backup_margin a promotion of ``credential`` would breach.
+
+    The task being backfilled is exempt: its min_active need takes precedence
+    over its own margin (the resulting shortfall is still reported through
+    ``backup_deficits``). Every other task that shares the credential must
+    keep at least ``backup_margin`` standbys after the promotion.
+    """
+    vetoes: list[dict[str, Any]] = []
+    for peer in coverage.get(credential.id, ()):
+        if peer.id == backfilled.id:
+            continue
+        standby_after = _standby_count(peer, credentials, final_state) - 1
+        if standby_after < peer.backup_margin:
+            vetoes.append(
+                {
+                    "task_id": peer.id,
+                    "standby_after": standby_after,
+                    "backup_margin": peer.backup_margin,
+                }
+            )
+    return vetoes
+
+
+def _degradation(
+    task: Task,
+    role: str,
+    active_count: int,
+    candidates: list[Credential],
+    blocked: list[tuple[Credential, list[dict[str, Any]]]],
+) -> dict[str, Any]:
+    """Describe a task/role pair this batch could not bring to min_active."""
+    if not candidates:
+        reason = "no standby candidates bound for this role"
+    elif blocked:
+        reason = "all remaining promotion candidates are blocked by peer backup margins"
+    else:
+        reason = "insufficient standby candidates to reach min_active"
+    ordered = sorted(
+        blocked,
+        key=lambda pair: (
+            len(pair[1]),
+            sum(v["backup_margin"] - v["standby_after"] for v in pair[1]),
+            pair[0].id,
+        ),
+    )
+    return {
+        "task_id": task.id,
+        "role": role,
+        "active": active_count,
+        "min_active": task.min_active,
+        "shortfall": task.min_active - active_count,
+        "reason": reason,
+        "candidates": [
+            {
+                "credential_id": credential.id,
+                "action": "promote",
+                "blocked_by": [veto["task_id"] for veto in vetoes],
+                "reason": "; ".join(
+                    f"promotion would drop {veto['task_id']} standby to "
+                    f"{veto['standby_after']} (backup_margin {veto['backup_margin']})"
+                    for veto in vetoes
+                ),
+            }
+            for credential, vetoes in ordered
+        ],
+    }
+
+
 def _summary(
     items: tuple[PlanItem, ...],
     credentials: Mapping[str, Credential],
     tasks: list[Task],
     backup_deficits: dict[str, int],
     active_deficits: list[str],
+    degraded: list[dict[str, Any]],
     truncated: int,
 ) -> dict[str, object]:
     reasons = Counter(item.reason_code for item in items)
@@ -200,6 +317,7 @@ def _summary(
         "affected_tasks": affected,
         "backup_deficits": dict(sorted(backup_deficits.items())),
         "active_deficits": sorted(active_deficits),
+        "degraded_tasks": degraded,
         "truncated": truncated,
         "credential_count": len(credentials),
         "task_count": len(tasks),

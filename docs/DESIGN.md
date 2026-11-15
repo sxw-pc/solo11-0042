@@ -102,13 +102,22 @@ the wall clock.
      target = active for stored active credentials, otherwise standby
      affected_tasks = tasks binding it, matching source and required role
      emit rotate(item)
-4. For each task and each required role, in task order:
+4. Build the joint coverage index: credential -> every task whose standby
+   pool it feeds (same counting rule as backup_deficits). Then, for each
+   task and each required role, in task order:
      count final-state active candidates
      while count < min_active:
          choose the best standby by binding rank/ID
-         upgrade the existing rotate item to target active, or emit promote(item)
-         urgency = REDUNDANCY_LOW (3)
-     if coverage still short: record task:role in active_deficits
+         veto the promotion if it would drop any *other* task sharing the
+         credential below its backup_margin; the backfilled task's own
+         min_active takes precedence over its own margin
+         otherwise upgrade the existing rotate item to target active,
+         or emit promote(item); urgency = REDUNDANCY_LOW (3)
+     if coverage still short: record task:role in active_deficits and add a
+       degraded_tasks entry with the shortfall, the reason, and the blocked
+       candidates ordered by executability (fewest blocking peers, then
+       shallowest total margin breach, then credential ID) so later batches
+       can resume backfilling
 5. Compute standby coverage for every task; record
    max(0, backup_margin - standby) in backup_deficits. This is an observation:
    a plan cannot invent credentials.
@@ -120,7 +129,12 @@ the wall clock.
 The planner guarantees a stable order and uses integer day counts. If several credentials
 share an urgency and task priority, credential ID breaks the tie. `backup_margin` is used
 both to surface unresolved redundancy and to preserve a visible deficit; `min_active` may
-upgrade an expiring standby's target from standby to active.
+upgrade an expiring standby's target from standby to active. Because one credential may
+back several tasks, promotions are planned jointly: a promotion that would push any peer
+task below its `backup_margin` is vetoed, and the unmet task is reported in
+`summary.degraded_tasks` with an executability-ordered candidate list instead of being
+silently filled. Credentials bound to a single task have no peers, so their legacy
+single-task backfill behavior is unchanged.
 
 `batch_id = BATCH-<YYYYMMDDTHHMMSSZ>-<first 10 hex chars of sha256(payload)>`, where
 `payload` contains the normalized timestamp and item
